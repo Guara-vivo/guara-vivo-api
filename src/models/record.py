@@ -1,8 +1,10 @@
 from sqlmodel import SQLModel, Field, Relationship
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, TYPE_CHECKING
 from sqlalchemy import Column, ARRAY, String
-from models.analysis import Analysis
+
+if TYPE_CHECKING:
+    from models.analysis import Analysis
 
 birdbehavior = Literal["ninhando", "vocalizando", "alimentando-se", "voando"]
 

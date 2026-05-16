@@ -1,6 +1,8 @@
 from sqlmodel import SQLModel, Field, Relationship
-from typing import Optional
-from models.analysis import Analysis
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from models.analysis import Analysis
 
 class Ibis(SQLModel, table=True):
     __tablename__ = "ibis"
@@ -10,7 +12,7 @@ class Ibis(SQLModel, table=True):
     age_group: str
     analysis_id: int = Field(foreign_key="analyses.id")
 
-    analysis: Analysis = Relationship(back_populates="birds")
+    analysis: "Analysis" = Relationship(back_populates="birds")
 
     class Config:
         from_attributes = True
