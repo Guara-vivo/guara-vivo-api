@@ -1,22 +1,23 @@
-import os
-
-from sqlmodel import Session, create_engine
 from datetime import datetime
-from models import Record, Analysis, Ibis
-from dotenv import load_dotenv
-load_dotenv()
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
+from models import User, Record, Analysis, Ibis
+from database import SessionLocal
 
 def seed_database():
-    with Session(engine) as session:
+    with SessionLocal() as session:
+        user = session.query(User).first()
+
+        if user is None:
+            user = User(name="admin", email="admin@example.com")
+            session.add(user)
+            session.flush()
+
         record_1 = Record(
             images=["https://supabase.co/storage/v1/object/public/images/guara1.png", "https://supabase.co/storage/v1/object/public/images/guara2.png"],
             latitude_camera=-24.7088,
             longitude_camera=-47.5582,
             behavior=["vocalizando"],
             date_time=datetime.now(),
-            user_id=1
+            user_id=user.id
         )
         session.add(record_1)
         session.flush()
@@ -42,7 +43,7 @@ def seed_database():
             longitude_camera=-47.5600,
             behavior=["alimentando-se"],
             date_time=datetime.now(),
-            user_id=1
+            user_id=user.id
         )
         session.add(record_2)
         session.flush()
@@ -67,7 +68,7 @@ def seed_database():
             longitude_camera=-47.5500,
             behavior=[],
             date_time=datetime.now(),
-            user_id=1
+            user_id=user.id
         )
         session.add(record_3)
         session.flush()

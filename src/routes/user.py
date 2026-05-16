@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
 from models import User
+from schemas import UserCreate, UserRead, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
 
-@router.get("/{user_id}", response_model=User)
+@router.get("/{user_id}", response_model=UserRead)
 def read_user(user_id: int, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -14,8 +15,8 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
     
     return user
 
-@router.post("/", response_model=User)
-def create_user(user: User, db: Session = Depends(get_db)):
+@router.post("/", response_model=UserRead)
+def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db_user = User(name=user.name, email=user.email)
 
     db.add(db_user)
@@ -24,8 +25,8 @@ def create_user(user: User, db: Session = Depends(get_db)):
 
     return db_user
 
-@router.put("/{user_id}", response_model=User)
-def update_user(user_id: int, user: User, db: Session = Depends(get_db)):
+@router.put("/{user_id}", response_model=UserRead)
+def update_user(user_id: int, user: UserUpdate, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.id == user_id).first()
 
     if db_user is None:
