@@ -1,15 +1,17 @@
+import os
+
 from sqlmodel import Session, create_engine
 from datetime import datetime
 from models import Record, Analysis, Ibis
 from dotenv import load_dotenv
 load_dotenv()
-DATABASE_URL = "postgresql://postgres:sua_senha@db.supabase.co:5432/postgres"
+DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 
 def seed_database():
     with Session(engine) as session:
         record_1 = Record(
-            images="https://supabase.co/storage/v1/object/public/images/guara1.png",
+            images=["https://supabase.co/storage/v1/object/public/images/guara1.png", "https://supabase.co/storage/v1/object/public/images/guara2.png"],
             latitude_camera=-24.7088,
             longitude_camera=-47.5582,
             behavior=["vocalizando"],
@@ -35,7 +37,7 @@ def seed_database():
         session.add_all([ibis_1, ibis_2])
 
         record_2 = Record(
-            images="https://supabase.co/storage/v1/object/public/images/guara2.png",
+            images=["https://supabase.co/storage/v1/object/public/images/guara2.png"],
             latitude_camera=-24.7100,
             longitude_camera=-47.5600,
             behavior=["alimentando-se"],
@@ -60,7 +62,7 @@ def seed_database():
         session.add(ibis_3)
 
         record_3 = Record(
-            images="https://supabase.co/storage/v1/object/public/images/vazio.png",
+            images=["https://supabase.co/storage/v1/object/public/images/vazio.png"],
             latitude_camera=-24.7050,
             longitude_camera=-47.5500,
             behavior=[],
