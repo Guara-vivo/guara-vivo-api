@@ -1,7 +1,6 @@
 from sqlmodel import SQLModel, Field
-from database import get_session
 
-class User(SQLModel, table=True, get_session=get_session):
+class User(SQLModel, table=True):
     __tablename__ = "users"
 
     id: int = Field(nullable=False, primary_key=True)
@@ -9,4 +8,4 @@ class User(SQLModel, table=True, get_session=get_session):
     email: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True

@@ -1,14 +1,36 @@
 import os
-from sqlmodel import SQLModel, create_engine, Session
-from sqlalchemy.ext.asyncio import create_async_engine
+from dotenv import load_dotenv
+
+load_dotenv()
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlmodel import SQLModel
 
-DATABASE_URL = os.getenv("DATABASE_URL").replace("postgres://", "postgresql+asyncpg://")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+if DATABASE_URL is None:
+    DATABASE_URL = "sqlite:///./database.db"
+elif DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
 
-async def get_session():
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with async_session() as session:
-        yield session
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+
+if DATABASE_URL.startswith("postgresql"):
+    try:
+        import psycopg2
+    except Exception:
+        raise RuntimeError(
+            "psycopg2 is required for PostgreSQL connections. Install it in your venv: pip install psycopg2-binary"
+        )
+
+engine = create_engine(DATABASE_URL, echo=True, connect_args=connect_args)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = SQLModel
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

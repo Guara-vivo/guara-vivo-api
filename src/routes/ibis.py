@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from src.models import Ibis
-from src.database import get_db
+from models import Ibis
+from database import get_db
 
 router = APIRouter(prefix="/ibis", tags=["ibis"])
 

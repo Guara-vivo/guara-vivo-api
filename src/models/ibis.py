@@ -1,16 +1,16 @@
-from sqlmodel import SQLModel, Field
-from database import get_session
-from sqlmodel import Relationship
+from sqlmodel import SQLModel, Field, Relationship
+from typing import Optional
+from models.analysis import Analysis
 
-class Ibis(SQLModel, table=True, get_session=get_session):
+class Ibis(SQLModel, table=True):
     __tablename__ = "ibis"
 
-    id: int = Field(nullable=False, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
     color: str
     age_group: str
-    analysis_id: int = Field(foreign_key="analysis.id")
+    analysis_id: int = Field(foreign_key="analyses.id")
+
+    analysis: Analysis = Relationship(back_populates="birds")
 
     class Config:
-        orm_mode = True
-
-    analysis = Relationship(back_populates="ibis")
+        from_attributes = True

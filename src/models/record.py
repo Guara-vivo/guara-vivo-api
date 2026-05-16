@@ -1,20 +1,26 @@
-from sqlmodel import SQLModel, Field
-from database import get_session
+from sqlmodel import SQLModel, Field, Relationship
 from datetime import datetime
-from sqlmodel import Relationship
+from typing import List, Literal, Optional
+from sqlalchemy import Column, ARRAY, String
+from models.analysis import Analysis
 
-class Record(SQLModel, table=True, get_session=get_session):
+birdbehavior = Literal["ninhando", "vocalizando", "alimentando-se", "voando"]
+
+
+class Record(SQLModel, table=True):
     __tablename__ = "records"
 
-    id: int = Field(default=None, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
     images: str
     latitude_camera: float
     longitude_camera: float
-    behavior: str
+    behavior: List[birdbehavior] = Field(sa_column=Column(ARRAY(String)))
     date_time: datetime
     user_id: int = Field(foreign_key="users.id")
+    analysis: Optional["Analysis"] = Relationship(
+        back_populates="record", 
+        sa_relationship_kwargs={"uselist": False}
+    )
 
     class Config:
-        orm_mode = True
-
-    users = Relationship("User", back_populates="records")
+        from_attributes = True
