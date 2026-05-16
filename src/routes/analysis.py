@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from models import Analysis
 from database import get_db
 from schemas import AnalysisCreate, AnalysisRead, AnalysisUpdate
@@ -7,14 +8,16 @@ from schemas import AnalysisCreate, AnalysisRead, AnalysisUpdate
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 @router.get("/", response_model=list[AnalysisRead])
-def read_analyses(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    analyses = db.query(Analysis).offset(skip).limit(limit).all()
+async def read_analyses(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Analysis).offset(skip).limit(limit))
+    analyses = result.scalars().all()
     
     return analyses
 
 @router.get("/{analysis_id}", response_model=AnalysisRead)
-def read_analysis(analysis_id: int, db: Session = Depends(get_db)):
-    analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
+async def read_analysis(analysis_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
+    analysis = result.scalar_one_or_none()
 
     if analysis is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
@@ -22,18 +25,19 @@ def read_analysis(analysis_id: int, db: Session = Depends(get_db)):
     return analysis
 
 @router.post("/", response_model=AnalysisRead)
-def create_analysis(analysis: AnalysisCreate, db: Session = Depends(get_db)):
+async def create_analysis(analysis: AnalysisCreate, db: AsyncSession = Depends(get_db)):
     db_analysis = Analysis(**analysis.model_dump())
 
     db.add(db_analysis)
-    db.commit()
-    db.refresh(db_analysis)
+    await db.commit()
+    await db.refresh(db_analysis)
 
     return db_analysis
 
 @router.put("/{analysis_id}", response_model=AnalysisRead)
-def update_analysis(analysis_id: int, updated_analysis: AnalysisUpdate, db: Session = Depends(get_db)):
-    analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
+async def update_analysis(analysis_id: int, updated_analysis: AnalysisUpdate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
+    analysis = result.scalar_one_or_none()
 
     if analysis is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
@@ -44,19 +48,20 @@ def update_analysis(analysis_id: int, updated_analysis: AnalysisUpdate, db: Sess
     analysis.longitude = updated_analysis.longitude
     analysis.datetime = updated_analysis.datetime
     analysis.recorder_id = updated_analysis.recorder_id
-    db.commit()
-    db.refresh(analysis)
+    await db.commit()
+    await db.refresh(analysis)
 
     return analysis
 
 @router.delete("/{analysis_id}")
-def delete_analysis(analysis_id: int, db: Session = Depends(get_db)):
-    analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
+async def delete_analysis(analysis_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
+    analysis = result.scalar_one_or_none()
 
     if analysis is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
-    db.delete(analysis)
-    db.commit()
+    await db.delete(analysis)
+    await db.commit()
 
     return {"detail": "Analysis deleted successfully"}

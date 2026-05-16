@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models import Record
 from schemas import RecordCreate, RecordRead, RecordUpdate
@@ -7,12 +8,14 @@ from schemas import RecordCreate, RecordRead, RecordUpdate
 router = APIRouter(prefix="/records", tags=["records"])
 
 @router.get("/", response_model=list[RecordRead])
-def read_records(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return db.query(Record).offset(skip).limit(limit).all()
+async def read_records(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Record).offset(skip).limit(limit))
+    return result.scalars().all()
 
 @router.get("/{record_id}", response_model=RecordRead)
-def read_record(record_id: int, db: Session = Depends(get_db)):
-    record = db.query(Record).filter(Record.id == record_id).first()
+async def read_record(record_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Record).where(Record.id == record_id))
+    record = result.scalar_one_or_none()
 
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found")
@@ -20,18 +23,19 @@ def read_record(record_id: int, db: Session = Depends(get_db)):
     return record
 
 @router.post("/", response_model=RecordRead)
-def create_record(record: RecordCreate, db: Session = Depends(get_db)):
+async def create_record(record: RecordCreate, db: AsyncSession = Depends(get_db)):
     db_record = Record(**record.model_dump())
 
     db.add(db_record)
-    db.commit()
-    db.refresh(db_record)
+    await db.commit()
+    await db.refresh(db_record)
 
     return db_record
 
 @router.put("/{record_id}", response_model=RecordRead)
-def update_record(record_id: int, updated_record: RecordUpdate, db: Session = Depends(get_db)):
-    record = db.query(Record).filter(Record.id == record_id).first()
+async def update_record(record_id: int, updated_record: RecordUpdate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Record).where(Record.id == record_id))
+    record = result.scalar_one_or_none()
 
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found")
@@ -43,19 +47,20 @@ def update_record(record_id: int, updated_record: RecordUpdate, db: Session = De
     record.date_time = updated_record.date_time
     record.user_id = updated_record.user_id
     record.status = updated_record.status
-    db.commit()
-    db.refresh(record)
+    await db.commit()
+    await db.refresh(record)
 
     return record
 
 @router.delete("/{record_id}")
-def delete_record(record_id: int, db: Session = Depends(get_db)):
-    record = db.query(Record).filter(Record.id == record_id).first()
+async def delete_record(record_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Record).where(Record.id == record_id))
+    record = result.scalar_one_or_none()
 
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found")
     
-    db.delete(record)
-    db.commit()
+    await db.delete(record)
+    await db.commit()
 
     return {"detail": "Record deleted successfully"}

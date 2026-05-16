@@ -1,15 +1,19 @@
+import asyncio
 from datetime import datetime
-from models import User, Record, Analysis, Ibis
-from database import SessionLocal
+from sqlalchemy import select
 
-def seed_database():
-    with SessionLocal() as session:
-        user = session.query(User).first()
+from models import User, Record, Analysis, Ibis
+from database import AsyncSessionLocal
+
+async def seed_database():
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(User).limit(1))
+        user = result.scalar_one_or_none()
 
         if user is None:
             user = User(name="admin", email="admin@example.com")
             session.add(user)
-            session.flush()
+            await session.flush()
 
         record_1 = Record(
             images=["https://supabase.co/storage/v1/object/public/images/guara1.png", "https://supabase.co/storage/v1/object/public/images/guara2.png"],
@@ -20,7 +24,7 @@ def seed_database():
             user_id=user.id
         )
         session.add(record_1)
-        session.flush()
+        await session.flush()
 
         analysis_1 = Analysis(
             ibis_quantity=2,
@@ -31,7 +35,7 @@ def seed_database():
             recorder_id=record_1.id
         )
         session.add(analysis_1)
-        session.flush()
+        await session.flush()
 
         ibis_1 = Ibis(color="vermelho", age_group="adulto", analysis_id=analysis_1.id)
         ibis_2 = Ibis(color="cinza", age_group="juvenil", analysis_id=analysis_1.id)
@@ -46,7 +50,7 @@ def seed_database():
             user_id=user.id
         )
         session.add(record_2)
-        session.flush()
+        await session.flush()
 
         analysis_2 = Analysis(
             ibis_quantity=1,
@@ -57,7 +61,7 @@ def seed_database():
             recorder_id=record_2.id
         )
         session.add(analysis_2)
-        session.flush()
+        await session.flush()
 
         ibis_3 = Ibis(color="vermelho", age_group="adulto", analysis_id=analysis_2.id)
         session.add(ibis_3)
@@ -71,7 +75,7 @@ def seed_database():
             user_id=user.id
         )
         session.add(record_3)
-        session.flush()
+        await session.flush()
 
         analysis_3 = Analysis(
             ibis_quantity=0,
@@ -83,8 +87,8 @@ def seed_database():
         )
         session.add(analysis_3)
         
-        session.commit()
+        await session.commit()
         print("Seed executado com sucesso!")
 
 if __name__ == "__main__":
-    seed_database()
+    asyncio.run(seed_database())

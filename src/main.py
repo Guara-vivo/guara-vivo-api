@@ -1,22 +1,27 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from sqlalchemy import select
+
 from routes import user, record, analysis, ibis
-from database import SessionLocal
+from database import AsyncSessionLocal
 from models import User
 
-app = FastAPI()
 
-
-@app.on_event("startup")
-def on_startup():
-    db = SessionLocal()
-    try:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with AsyncSessionLocal() as db:
         # simple seed: create one admin user if DB is empty
-        if db.query(User).first() is None:
+        result = await db.execute(select(User).limit(1))
+        if result.scalar_one_or_none() is None:
             admin = User(name="admin", email="admin@example.com")
             db.add(admin)
-            db.commit()
-    finally:
-        db.close()
+            await db.commit()
+
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 app.include_router(user.router)
