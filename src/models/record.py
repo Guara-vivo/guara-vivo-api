@@ -13,7 +13,7 @@ class Record(SQLModel, table=True):
     __tablename__ = "records"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    images: str
+    images: List[str] = Field(sa_column=Column(ARRAY(String)))
     latitude_camera: float
     longitude_camera: float
     behavior: List[birdbehavior] = Field(sa_column=Column(ARRAY(String)))
