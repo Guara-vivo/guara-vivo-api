@@ -1,5 +1,14 @@
 # Guara Vivo API - Developer Notes
 
+## Current Architecture
+
+- API repo: `guara-vivo-api`, FastAPI on port `8001`.
+- Identifier repo: sibling `../guara-vivo-identifier`, inference API on port `8000`.
+- Worker repo: sibling `../guara-vivo-worker`, consumes RabbitMQ jobs and calls the identifier service.
+- PostgreSQL is external in Supabase. There is no local Postgres service in `docker-compose.yml`.
+- RabbitMQ runs locally through Docker Compose with the management UI on port `15672`.
+- Inference flow: frontend creates a record -> API inserts `records` row -> API publishes `record_id` to RabbitMQ -> worker calls identifier -> worker writes `analyses` and `ibis` rows.
+
 ## Quick Start
 
 ```bash
@@ -10,7 +19,7 @@ pip install -r requirements.txt
 
 # Load env vars
 copy .env.example .env
-# Edit .env with your external PostgreSQL DATABASE_URL and JWT_SECRET_KEY
+# Edit .env with your Supabase PostgreSQL DATABASE_URL and JWT_SECRET_KEY
 
 # Apply database migrations
 alembic upgrade head
@@ -21,11 +30,24 @@ python src/main.py
 # Or: uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
+## Docker Compose
+
+- `docker-compose.yml` orchestrates `api`, `identifier`, `worker`, and `rabbitmq`.
+- Docker Compose does not start PostgreSQL; use Supabase through `DATABASE_URL`.
+- Use `.env.docker-compose` for local Docker secrets and runtime config. This file is ignored by Git.
+- Keep `.env.docker-compose.example` versioned as a safe template with placeholder values only.
+- Start the stack with `docker compose --env-file .env.docker-compose up --build`.
+- Validate the stack with `docker compose --env-file .env.docker-compose config`, but do not share that output because it expands secrets.
+- The API service runs `alembic upgrade head` before starting `uvicorn`.
+- The `api` and `worker` services depend on RabbitMQ health, not on a local database container.
+
 ## Database
 
 - PostgreSQL is required. The app must fail fast if `DATABASE_URL` is missing or is not PostgreSQL.
+- Supabase is the current PostgreSQL provider; set the Supabase connection string in `.env` or `.env.docker-compose`.
 - Valid URL prefixes: `postgres://`, `postgresql://`, `postgresql+psycopg2://`.
 - SQLite is not supported by default and `database.db` must not be committed.
+- Do not reintroduce a local Postgres container unless explicitly requested.
 - PostgreSQL needs `psycopg2-binary` for Alembic and `asyncpg` for the async API runtime.
 - Runtime database access uses SQLAlchemy async engine/session (`create_async_engine`, `AsyncSession`, `async_sessionmaker`).
 - SQLAlchemy uses `pool_pre_ping=True` to avoid stale pooled connections.
@@ -44,8 +66,19 @@ python src/main.py
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
 - `20260517_0003_add_security_performance_indexes.py` adds a unique index on `users.email` plus indexes on `records.user_id` and `ibis.analysis_id`.
 - If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
-- Alembic remains synchronous and reads `DATABASE_URL` from `.env` through `src/database.py`.
+- Alembic remains synchronous and reads `DATABASE_URL` from process env or `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
+
+## RabbitMQ And Inference
+
+- API-side RabbitMQ integration lives in `src/rabbitmq.py` and uses `pika`.
+- `POST /records/` publishes `{"record_id": id}` after the record is committed.
+- Queue name is configured by `QUEUE_NAME` and currently defaults to `guara-vermelho-inference`.
+- RabbitMQ connection variables: `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`.
+- Worker error queue is configured by `ERROR_QUEUE_NAME`, currently `guara-vermelho-inference-error`.
+- Worker calls `IA_API_URL`, currently `http://identifier:8000/guara-vermelho/inference` inside Docker.
+- If publishing to RabbitMQ fails during record creation, the API sets the record status to `failed` and returns an HTTP error.
+- Keep the worker write logic aligned with the current `analyses` schema: only `id`, `ibis_quantity`, `datetime`, and `recorder_id`.
 
 ## Seed Data
 
@@ -89,11 +122,16 @@ python src/seed.py
 ## Environment
 
 - `DATABASE_URL` is required and must point to PostgreSQL.
+- In Docker, `DATABASE_URL` must point to Supabase or another external PostgreSQL database.
 - `JWT_SECRET_KEY` is required before issuing or validating JWTs. Generate it with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 - `JWT_ACCESS_TOKEN_EXPIRE` is optional and defaults to `3600` seconds.
 - `CORS_ORIGINS` is optional and should be a comma-separated allowlist of frontend origins. If empty, CORS middleware is not enabled.
 - `MAX_REQUEST_BODY_BYTES` is optional and defaults to `1048576`.
 - `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE` tune SQLAlchemy async pool behavior.
+- `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, and `QUEUE_NAME` configure API queue publishing.
+- `RABBITMQ_DEFAULT_USER` and `RABBITMQ_DEFAULT_PASS` configure the local RabbitMQ Docker container.
+- `ERROR_QUEUE_NAME` and `IA_API_URL` are used by the worker container.
+- Do not commit `.env`, `.env.docker-compose`, real Supabase URLs, JWT secrets, or RabbitMQ passwords.
 
 ## Request Hardening
 
@@ -130,6 +168,7 @@ python src/seed.py
 - Do not expose `User.password` in response models; use `UserRead` for user responses.
 - Keep request schemas bounded with `min_length`, `max_length`, and numeric ranges where applicable.
 - Validate ownership before writes that reference foreign keys. Records belong to `record.user_id`; analyses and ibis inherit ownership through the associated record.
+- Keep record creation publishing to RabbitMQ after the database commit so queued jobs reference persisted rows.
 
 ## Database Practices
 
@@ -155,9 +194,11 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 ## Notes
 
 - PostgreSQL is mandatory; local SQLite fallback was removed.
+- PostgreSQL is hosted externally on Supabase for the Docker flow.
 - FastAPI startup uses `lifespan`; do not reintroduce deprecated `@app.on_event("startup")`.
 - Startup seeds admin user only; sample `Record`, `Analysis`, and `Ibis` rows are not created automatically.
 - `database.db` was removed and is ignored.
+- Local Docker Compose includes RabbitMQ but no database container.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
 - Production schema has been migrated to Alembic head `20260517_0003`: `analyses` no longer has unused location/flock fields, `records.status` exists with existing rows set to `pending`, `users.password` is required, `users.email` is unique, and key lookup indexes exist.
 

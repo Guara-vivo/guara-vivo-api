@@ -111,6 +111,7 @@ celerybeat.pid
 # Virtual Environments
 # Common virtualenv/venv folders
 .env
+.env.docker-compose
 .venv/
 venv/
 env/

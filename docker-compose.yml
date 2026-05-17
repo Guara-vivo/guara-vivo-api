@@ -1,0 +1,84 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      PYTHONPATH: /app/src
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ACCESS_TOKEN_EXPIRE: ${JWT_ACCESS_TOKEN_EXPIRE}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW}
+      DATABASE_POOL_TIMEOUT: ${DATABASE_POOL_TIMEOUT}
+      DATABASE_POOL_RECYCLE: ${DATABASE_POOL_RECYCLE}
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      RABBITMQ_PORT: ${RABBITMQ_PORT}
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      QUEUE_NAME: ${QUEUE_NAME}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8001"
+    networks:
+      - guara-vivo-network
+
+  identifier:
+    build:
+      context: ../guara-vivo-identifier
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    networks:
+      - guara-vivo-network
+
+  worker:
+    build:
+      context: ../guara-vivo-worker
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      RABBITMQ_PORT: ${RABBITMQ_PORT}
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      QUEUE_NAME: ${QUEUE_NAME}
+      ERROR_QUEUE_NAME: ${ERROR_QUEUE_NAME}
+      IA_API_URL: ${IA_API_URL}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      identifier:
+        condition: service_started
+    networks:
+      - guara-vivo-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - guara-vivo-network
+
+networks:
+  guara-vivo-network:
+    driver: bridge
+
+volumes:
+  rabbitmq_data:
