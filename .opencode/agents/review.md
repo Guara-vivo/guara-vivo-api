@@ -2,7 +2,7 @@
 name: review
 description: Revisor de código para Python/FastAPI. Focado em segurança, performance, SQLAlchemy/Alembic, autenticação JWT e boas práticas de API.
 mode: subagent
-model: Qwen/Qwen3.5-9B-Q4_K_M
+model: lmstudio/Qwen3.5-9B-Q4_K_M
 permission:
   edit: deny
 ---
