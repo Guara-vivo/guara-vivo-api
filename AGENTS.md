@@ -127,3 +127,6 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 - Avoid asking confirmation for obvious actions.
 - Return concise summaries after execution.
 - Stop after completing requested task.
+
+- **Password Security**: All passwords must be hashed using bcrypt before storage. Use `bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')` for hashing and `bcrypt.checkpw()` for verification. Never store plain text passwords.
+- **Plan Mode**: During planning phases, only generate plans and architecture. Do not output code blocks or file modifications. Wait for explicit implementation command before making any changes.

@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 
+import bcrypt
+
 from fastapi import FastAPI
 from sqlalchemy import select
 
@@ -14,7 +16,8 @@ async def lifespan(app: FastAPI):
         # simple seed: create one admin user if DB is empty
         result = await db.execute(select(User).limit(1))
         if result.scalar_one_or_none() is None:
-            admin = User(name="admin", email="admin@example.com")
+            admin_password = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode("utf-8")
+            admin = User(name="admin", email="admin@example.com", password=admin_password)
             db.add(admin)
             await db.commit()
 

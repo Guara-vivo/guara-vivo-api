@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import List, Literal, Optional
 
+from pydantic import Field
 from sqlmodel import SQLModel
 
 
@@ -14,15 +15,20 @@ class UserBase(SQLModel):
 
 
 class UserCreate(UserBase):
-    pass
+    password: str = Field(min_length=6)
 
 
 class UserUpdate(UserBase):
-    pass
+    password: str = Field(min_length=6)
 
 
 class UserRead(UserBase):
     id: int
+
+
+class UserLogin(SQLModel):
+    email: str
+    password: str = Field(min_length=6)
 
 
 class RecordBase(SQLModel):

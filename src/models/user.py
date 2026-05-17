@@ -7,6 +7,7 @@ class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     email: str
+    password: str
 
     class Config:
         from_attributes = True

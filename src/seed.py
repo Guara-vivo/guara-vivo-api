@@ -1,5 +1,7 @@
 import asyncio
 from datetime import datetime
+
+import bcrypt
 from sqlalchemy import select
 
 from models import User, Record, Analysis, Ibis
@@ -11,7 +13,8 @@ async def seed_database():
         user = result.scalar_one_or_none()
 
         if user is None:
-            user = User(name="admin", email="admin@example.com")
+            admin_password = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode("utf-8")
+            user = User(name="admin", email="admin@example.com", password=admin_password)
             session.add(user)
             await session.flush()
 
