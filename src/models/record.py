@@ -24,7 +24,7 @@ class Record(SQLModel, table=True):
     longitude_camera: float
     behavior: List[birdbehavior] = Field(sa_column=Column(ARRAY(String)))
     date_time: datetime
-    user_id: int = Field(foreign_key="users.id")
+    user_id: int = Field(foreign_key="users.id", index=True)
     status: str = Field(default="pending", sa_column=Column(String, nullable=False))
     analysis: Optional["Analysis"] = Relationship(
         back_populates="record", 

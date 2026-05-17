@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import Field
+from pydantic import EmailStr, Field, field_validator
 from sqlmodel import SQLModel
 
 
@@ -10,25 +10,35 @@ RecordStatus = Literal["pending", "processing", "completed", "failed"]
 
 
 class UserBase(SQLModel):
-    name: str
-    email: str
+    name: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, email: EmailStr) -> str:
+        return str(email).lower()
 
 
 class UserCreate(UserBase):
-    password: str = Field(min_length=6)
+    password: str = Field(min_length=6, max_length=128)
 
 
 class UserUpdate(UserBase):
-    password: str = Field(min_length=6)
+    password: str = Field(min_length=6, max_length=128)
 
 
 class UserRead(UserBase):
     id: int
 
 
-class atualUserLogin(SQLModel):
-    email: str
-    password: str = Field(min_length=6)
+class UserLogin(SQLModel):
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, email: EmailStr) -> str:
+        return str(email).lower()
 
 
 class Token(SQLModel):
@@ -38,13 +48,21 @@ class Token(SQLModel):
 
 
 class RecordBase(SQLModel):
-    images: List[str]
-    latitude_camera: float
-    longitude_camera: float
-    behavior: List[BirdBehavior]
+    images: List[str] = Field(min_length=1, max_length=20)
+    latitude_camera: float = Field(ge=-90, le=90)
+    longitude_camera: float = Field(ge=-180, le=180)
+    behavior: List[BirdBehavior] = Field(min_length=1, max_length=20)
     date_time: datetime
     user_id: int
     status: RecordStatus = "pending"
+
+    @field_validator("images")
+    @classmethod
+    def validate_images(cls, images: List[str]) -> List[str]:
+        for image in images:
+            if not image or len(image) > 2048:
+                raise ValueError("image references must be between 1 and 2048 characters")
+        return images
 
 
 class RecordCreate(RecordBase):
@@ -60,7 +78,7 @@ class RecordRead(RecordBase):
 
 
 class AnalysisBase(SQLModel):
-    ibis_quantity: int
+    ibis_quantity: int = Field(ge=0, le=100000)
     datetime: datetime
     recorder_id: int
 
@@ -78,8 +96,8 @@ class AnalysisRead(AnalysisBase):
 
 
 class IbisBase(SQLModel):
-    color: str
-    age_group: str
+    color: str = Field(min_length=1, max_length=50)
+    age_group: str = Field(min_length=1, max_length=50)
     analysis_id: int
 
 

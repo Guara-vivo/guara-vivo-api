@@ -10,7 +10,7 @@ class Ibis(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     color: str
     age_group: str
-    analysis_id: int = Field(foreign_key="analyses.id")
+    analysis_id: int = Field(foreign_key="analyses.id", index=True)
 
     analysis: "Analysis" = Relationship(back_populates="birds")
 

@@ -38,10 +38,11 @@ python src/main.py
 - Apply migrations with `alembic upgrade head` before starting the API.
 - Create a migration after model changes with `alembic revision --autogenerate -m "message"`, then review the generated file before applying it.
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
-- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef`.
+- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003`.
 - `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
 - `d3a87201af95_add_status_column_to_records_table.py` adds `records.status`, backfills existing rows to `pending`, and makes it `NOT NULL`.
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
+- `20260517_0003_add_security_performance_indexes.py` adds a unique index on `users.email` plus indexes on `records.user_id` and `ibis.analysis_id`.
 - If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
 - Alembic remains synchronous and reads `DATABASE_URL` from `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
@@ -61,11 +62,11 @@ python src/seed.py
 - `GET /docs` - Swagger UI
 - `/users/login` - POST, validates email/password and returns a JWT access token plus user data
 - `/users/me` - GET, protected endpoint that returns the current authenticated user from `Authorization: Bearer <token>`
-- `/users/{id}` - GET, POST, PUT, DELETE
-- `/records` - CRUD on records
-- `/analysis` - CRUD on analyses  
-- `/ibis` - CRUD on ibis
-- List endpoints for `records`, `analysis`, and `ibis` support `skip` and `limit` query params. Default: `skip=0&limit=100`.
+- `/users/{id}` - GET, PUT, DELETE protected by JWT and limited to the authenticated user
+- `/records` - CRUD on records; create/update/delete require JWT and ownership through `user_id`
+- `/analysis` - CRUD on analyses; create/update/delete require JWT and ownership through the related record
+- `/ibis` - CRUD on ibis; create/update/delete require JWT and ownership through the related analysis/record
+- List endpoints for `records`, `analysis`, and `ibis` support bounded `skip` and `limit` query params. Default: `skip=0&limit=100`, max `limit=100`.
 
 ## Authentication
 
@@ -74,10 +75,14 @@ python src/seed.py
 - `src/routes/user.py` owns password hashing, password verification, user creation/update, and login.
 - `src/security.py` owns JWT access-token creation and current-user validation.
 - Login returns a stateless JWT access token with `token_type="bearer"` and the authenticated `UserRead` payload.
+- Login has a simple in-memory per-process rate limit: 5 attempts per client IP per 60 seconds.
 - JWT payload includes `sub` as the user id, `email`, `type="access"`, `iat`, and `exp`.
 - Access tokens currently expire after 1 hour by default (`JWT_ACCESS_TOKEN_EXPIRE=3600`).
 - No refresh token or remote logout is implemented yet.
 - Protected endpoints should depend on `get_current_user` from `src/security.py`.
+- User read/update/delete routes require the authenticated user's own id.
+- Record writes require JWT and `record.user_id` must match the authenticated user.
+- Analysis and ibis writes require JWT and ownership through the associated record.
 - Frontends should persist the returned `access_token` and send `Authorization: Bearer <access_token>` on protected requests.
 - Frontends can call `GET /users/me` to validate an existing session.
 
@@ -86,6 +91,16 @@ python src/seed.py
 - `DATABASE_URL` is required and must point to PostgreSQL.
 - `JWT_SECRET_KEY` is required before issuing or validating JWTs. Generate it with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 - `JWT_ACCESS_TOKEN_EXPIRE` is optional and defaults to `3600` seconds.
+- `CORS_ORIGINS` is optional and should be a comma-separated allowlist of frontend origins. If empty, CORS middleware is not enabled.
+- `MAX_REQUEST_BODY_BYTES` is optional and defaults to `1048576`.
+- `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE` tune SQLAlchemy async pool behavior.
+
+## Request Hardening
+
+- `src/main.py` configures CORS only when `CORS_ORIGINS` is non-empty; keep it as a comma-separated allowlist, never `*` with credentials.
+- `src/main.py` rejects oversized `POST`, `PUT`, and `PATCH` bodies using `MAX_REQUEST_BODY_BYTES`.
+- `src/main.py` rejects non-JSON request bodies for `POST`, `PUT`, and `PATCH` when the body is non-empty.
+- Keep login rate limiting in `src/routes/user.py`; replace the in-memory limiter with Redis or another shared store before horizontal scaling.
 
 ## Models
 
@@ -94,14 +109,17 @@ python src/seed.py
 - `Record.status` is persisted in the `records.status` column and must stay aligned between `src/models/record.py`, `src/schemas.py`, and Alembic migrations.
 - `Record.images` and `Record.behavior` use PostgreSQL `ARRAY(String)`, so PostgreSQL support is required.
 - `User.password` is required and persists only the bcrypt hash, never the plain text password.
+- `User.email` is validated with `EmailStr`, normalized to lowercase in request schemas, and must be unique in the database.
 - `Analysis` currently stores only `id`, `ibis_quantity`, `datetime`, and `recorder_id`; do not reintroduce `flock_size`, `latitude`, or `longitude` unless there is a new schema requirement and migration.
 - `Analysis.recorder_id` is a unique foreign key to `records.id`, representing a one-to-one relationship between a record and its analysis.
 - Table models live under `src/models/` and should be used for persistence only.
 - Request/response schemas live in `src/schemas.py`.
+- `email-validator` is required by Pydantic's `EmailStr`; keep it in `requirements.txt`.
 
 ## Route Practices
 
 - Keep list endpoints paginated; avoid unbounded result loading.
+- Keep pagination parameters bounded with `Query`: `skip >= 0`, `1 <= limit <= 100`.
 - Route handlers use `async def` with `AsyncSession` from `get_db()`.
 - Use SQLAlchemy `select()` with `await db.execute(...)`; do not use sync `.query()` calls in routes.
 - Use `await db.commit()`, `await db.refresh(...)`, and `await db.delete(...)` for writes.
@@ -110,10 +128,13 @@ python src/seed.py
 - Use dedicated schemas from `src/schemas.py` for request bodies and response models.
 - Prefer explicit field assignment in route updates.
 - Do not expose `User.password` in response models; use `UserRead` for user responses.
+- Keep request schemas bounded with `min_length`, `max_length`, and numeric ranges where applicable.
+- Validate ownership before writes that reference foreign keys. Records belong to `record.user_id`; analyses and ibis inherit ownership through the associated record.
 
 ## Database Practices
 
 - Use one async session per request through `get_db()`.
+- Configure SQLAlchemy async pooling through `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE`.
 - Close sessions with async context managers; scripts should use `async with AsyncSessionLocal()`.
 - Avoid logging full database URLs, credentials, or raw SQL in production.
 - Validate foreign-key assumptions before adding new seed data.
@@ -123,6 +144,7 @@ python src/seed.py
 
 - Avoid loading full tables in API responses.
 - Add indexes before introducing frequent filters/searches beyond primary-key lookups.
+- Current performance indexes cover `users.email` (unique), `records.user_id`, and `ibis.analysis_id`.
 - Keep response payloads bounded with pagination.
 - Avoid expensive work during FastAPI lifespan startup beyond minimal seed.
 
@@ -137,7 +159,7 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 - Startup seeds admin user only; sample `Record`, `Analysis`, and `Ibis` rows are not created automatically.
 - `database.db` was removed and is ignored.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
-- Production schema has been migrated to Alembic head `269cbb5d99ef`: `analyses` no longer has unused location/flock fields, `records.status` exists with existing rows set to `pending`, and `users.password` is required.
+- Production schema has been migrated to Alembic head `20260517_0003`: `analyses` no longer has unused location/flock fields, `records.status` exists with existing rows set to `pending`, `users.password` is required, `users.email` is unique, and key lookup indexes exist.
 
 ## Response Style
 
