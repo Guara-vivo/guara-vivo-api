@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import EmailStr, Field, field_validator
 from sqlmodel import SQLModel
@@ -55,6 +55,31 @@ class RecordBase(SQLModel):
     date_time: datetime
     user_id: int
     status: RecordStatus = "pending"
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                inner = stripped[1:-1]
+                return [] if not inner else [item.strip().strip('"') for item in inner.split(",")]
+            return [value]
+
+        if (
+            isinstance(value, list)
+            and value
+            and all(isinstance(item, str) and len(item) == 1 for item in value)
+            and value[0] == "{"
+            and value[-1] == "}"
+        ):
+            return RecordBase._normalize_string_list("".join(value))
+
+        return value
+
+    @field_validator("images", "behavior", mode="before")
+    @classmethod
+    def normalize_string_lists(cls, value: Any) -> Any:
+        return cls._normalize_string_list(value)
 
     @field_validator("images")
     @classmethod
