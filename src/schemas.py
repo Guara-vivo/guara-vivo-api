@@ -49,9 +49,6 @@ class RecordRead(RecordBase):
 
 class AnalysisBase(SQLModel):
     ibis_quantity: int
-    flock_size: str
-    latitude: float
-    longitude: float
     datetime: datetime
     recorder_id: int
 

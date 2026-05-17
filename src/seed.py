@@ -28,9 +28,6 @@ async def seed_database():
 
         analysis_1 = Analysis(
             ibis_quantity=2,
-            flock_size="pequeno",
-            latitude=-24.7089,
-            longitude=-47.5581,
             datetime=datetime.now(),
             recorder_id=record_1.id
         )
@@ -54,9 +51,6 @@ async def seed_database():
 
         analysis_2 = Analysis(
             ibis_quantity=1,
-            flock_size="individual",
-            latitude=-24.7101,
-            longitude=-47.5599,
             datetime=datetime.now(),
             recorder_id=record_2.id
         )
@@ -79,9 +73,6 @@ async def seed_database():
 
         analysis_3 = Analysis(
             ibis_quantity=0,
-            flock_size="nenhum",
-            latitude=-24.7051,
-            longitude=-47.5499,
             datetime=datetime.now(),
             recorder_id=record_3.id
         )

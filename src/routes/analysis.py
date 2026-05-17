@@ -43,9 +43,6 @@ async def update_analysis(analysis_id: int, updated_analysis: AnalysisUpdate, db
         raise HTTPException(status_code=404, detail="Analysis not found")
 
     analysis.ibis_quantity = updated_analysis.ibis_quantity
-    analysis.flock_size = updated_analysis.flock_size
-    analysis.latitude = updated_analysis.latitude
-    analysis.longitude = updated_analysis.longitude
     analysis.datetime = updated_analysis.datetime
     analysis.recorder_id = updated_analysis.recorder_id
     await db.commit()

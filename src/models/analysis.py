@@ -11,9 +11,6 @@ class Analysis(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     ibis_quantity: int
-    flock_size: str
-    latitude: float
-    longitude: float
     datetime: datetime
     recorder_id: int = Field(foreign_key="records.id", unique=True)
     record: "Record" = Relationship(back_populates="analysis")
