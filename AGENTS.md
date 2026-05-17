@@ -6,6 +6,7 @@
 - Identifier repo: sibling `../guara-vivo-identifier`, inference API on port `8000`.
 - Worker repo: sibling `../guara-vivo-worker`, consumes RabbitMQ jobs and calls the identifier service.
 - PostgreSQL is external in Supabase. There is no local Postgres service in `docker-compose.yml`.
+- Uploaded frontend images are stored in Supabase Storage bucket `frontend-uploads`; `records.images` stores public URLs.
 - RabbitMQ runs locally through Docker Compose with the management UI on port `15672`.
 - Inference flow: frontend creates a record -> API inserts `records` row -> API publishes `record_id` to RabbitMQ -> worker calls identifier -> worker writes `analyses` and `ibis` rows.
 
@@ -100,6 +101,7 @@ python src/seed.py
 - `/users/me` - GET, protected endpoint that returns the current authenticated user from `Authorization: Bearer <token>`
 - `/users/{id}` - GET, PUT, DELETE protected by JWT and limited to the authenticated user
 - `/records` - CRUD on records; create/update/delete require JWT and ownership through `user_id`
+- `/records/upload` - POST multipart upload, stores images in Supabase Storage bucket `frontend-uploads`, creates a record, and queues inference
 - `/analysis` - CRUD on analyses; create/update/delete require JWT and ownership through the related record
 - `/ibis` - CRUD on ibis; create/update/delete require JWT and ownership through the related analysis/record
 - List endpoints for `records`, `analysis`, and `ibis` support bounded `skip` and `limit` query params. Default: `skip=0&limit=100`, max `limit=100`.
@@ -129,7 +131,9 @@ python src/seed.py
 - `JWT_SECRET_KEY` is required before issuing or validating JWTs. Generate it with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 - `JWT_ACCESS_TOKEN_EXPIRE` is optional and defaults to `3600` seconds.
 - `CORS_ORIGINS` is optional and should be a comma-separated allowlist of frontend origins. If empty, CORS middleware is not enabled.
-- `MAX_REQUEST_BODY_BYTES` is optional and defaults to `1048576`.
+- `MAX_REQUEST_BODY_BYTES` is optional and defaults to `10485760`.
+- `MAX_UPLOAD_FILE_BYTES` is optional and defaults to `5242880` bytes per uploaded image.
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_STORAGE_BUCKET` configure API uploads to Supabase Storage. The default bucket is `frontend-uploads`.
 - `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE` tune SQLAlchemy async pool behavior.
 - `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, and `QUEUE_NAME` configure API queue publishing.
 - `RABBITMQ_DEFAULT_USER` and `RABBITMQ_DEFAULT_PASS` configure the local RabbitMQ Docker container.
@@ -140,7 +144,7 @@ python src/seed.py
 
 - `src/main.py` configures CORS only when `CORS_ORIGINS` is non-empty; keep it as a comma-separated allowlist, never `*` with credentials.
 - `src/main.py` rejects oversized `POST`, `PUT`, and `PATCH` bodies using `MAX_REQUEST_BODY_BYTES`.
-- `src/main.py` rejects non-JSON request bodies for `POST`, `PUT`, and `PATCH` when the body is non-empty.
+- `src/main.py` accepts only JSON and multipart request bodies for `POST`, `PUT`, and `PATCH` when the body is non-empty.
 - Keep login rate limiting in `src/routes/user.py`; replace the in-memory limiter with Redis or another shared store before horizontal scaling.
 
 ## Models
@@ -172,6 +176,7 @@ python src/seed.py
 - Keep request schemas bounded with `min_length`, `max_length`, and numeric ranges where applicable.
 - Validate ownership before writes that reference foreign keys. Records belong to `record.user_id`; analyses and ibis inherit ownership through the associated record.
 - Keep record creation publishing to RabbitMQ after the database commit so queued jobs reference persisted rows.
+- Keep the Supabase service role key backend-only; never send it to the frontend.
 
 ## Database Practices
 
@@ -219,6 +224,14 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 - Avoid asking confirmation for obvious actions.
 - Return concise summaries after execution.
 - Stop after completing requested task.
+
+## Git Commits
+
+- Use short, concise commit messages.
+- Start commit messages with one of these prefixes according to the change: `feature:`, `hotfix:`, or `refactor:`.
+- Before committing, inspect `git status --short`, `git diff`, and `git log --oneline -10`.
+- Stage only files related to the intended change.
+- Never commit `.env`, `.env.docker-compose`, Supabase keys, JWT secrets, RabbitMQ passwords, or debug images.
 
 - **Password Security**: All passwords must be hashed using bcrypt before storage. Use `bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')` for hashing and `bcrypt.checkpw()` for verification. Never store plain text passwords.
 - **JWT Sessions**: Use JWT access tokens from `src/security.py` for post-login sessions. Tokens expire in 1 hour by default, require `JWT_SECRET_KEY`, and should be sent with `Authorization: Bearer <token>`.

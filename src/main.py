@@ -13,7 +13,7 @@ from database import AsyncSessionLocal
 from models import User
 
 
-MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", "1048576"))
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", "10485760"))
 
 
 def get_cors_origins() -> list[str]:
@@ -67,10 +67,11 @@ async def reject_oversized_or_invalid_json_requests(request: Request, call_next)
             )
 
         content_type = request.headers.get("content-type", "")
-        if request_body_size > 0 and not content_type.startswith("application/json"):
+        allowed_content_types = ("application/json", "multipart/form-data")
+        if request_body_size > 0 and not content_type.startswith(allowed_content_types):
             return JSONResponse(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                content={"detail": "Content-Type must be application/json"},
+                content={"detail": "Content-Type must be application/json or multipart/form-data"},
             )
 
     return await call_next(request)

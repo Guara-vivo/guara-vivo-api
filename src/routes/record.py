@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+import json
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
@@ -6,8 +10,40 @@ from models import Record, User
 from rabbitmq import publish_record_for_inference
 from schemas import RecordCreate, RecordRead, RecordUpdate
 from security import get_current_user
+from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
 
 router = APIRouter(prefix="/records", tags=["records"])
+
+
+def parse_behavior_form_values(values: list[str]) -> list[str]:
+    if len(values) == 1:
+        value = values[0].strip()
+        if value.startswith("["):
+            parsed = json.loads(value)
+            if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+                raise ValueError("behavior JSON must be a list of strings")
+            return parsed
+        if "," in value:
+            return [item.strip() for item in value.split(",") if item.strip()]
+    return values
+
+
+async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Record:
+    db.add(db_record)
+    await db.commit()
+    await db.refresh(db_record)
+
+    try:
+        publish_record_for_inference(db_record.id)
+    except Exception as exc:
+        db_record.status = "failed"
+        await db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Record created but could not be queued for inference",
+        ) from exc
+
+    return db_record
 
 @router.get("/", response_model=list[RecordRead])
 async def read_records(
@@ -38,22 +74,61 @@ async def create_record(
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
     db_record = Record(**record.model_dump())
+    return await commit_record_and_publish(db, db_record)
 
-    db.add(db_record)
-    await db.commit()
-    await db.refresh(db_record)
+
+@router.post("/upload", response_model=RecordRead)
+async def create_record_with_upload(
+    latitude_camera: float = Form(..., ge=-90, le=90),
+    longitude_camera: float = Form(..., ge=-180, le=180),
+    behavior: list[str] = Form(...),
+    date_time: datetime = Form(...),
+    images: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not 1 <= len(images) <= 20:
+        raise HTTPException(status_code=422, detail="images must contain between 1 and 20 files")
+
+    public_urls = []
+    for image in images:
+        content_type = image.content_type or ""
+        if not content_type.lower().startswith("image/"):
+            raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is not an image")
+
+        content = await image.read()
+        if not content:
+            raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is empty")
+        if len(content) > MAX_UPLOAD_FILE_BYTES:
+            raise HTTPException(status_code=413, detail=f"{image.filename or 'file'} is too large")
+
+        try:
+            public_urls.append(
+                await upload_public_image(
+                    user_id=current_user.id,
+                    content=content,
+                    filename=image.filename,
+                    content_type=content_type,
+                )
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not upload image to Supabase: {exc}") from exc
 
     try:
-        publish_record_for_inference(db_record.id)
-    except Exception as exc:
-        db_record.status = "failed"
-        await db.commit()
-        raise HTTPException(
-            status_code=503,
-            detail="Record created but could not be queued for inference",
-        ) from exc
+        record = RecordCreate(
+            images=public_urls,
+            latitude_camera=latitude_camera,
+            longitude_camera=longitude_camera,
+            behavior=parse_behavior_form_values(behavior),
+            date_time=date_time,
+            user_id=current_user.id,
+            status="pending",
+        )
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    return db_record
+    db_record = Record(**record.model_dump())
+    return await commit_record_and_publish(db, db_record)
 
 @router.put("/{record_id}", response_model=RecordRead)
 async def update_record(
