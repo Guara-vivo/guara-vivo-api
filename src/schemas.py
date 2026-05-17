@@ -26,9 +26,15 @@ class UserRead(UserBase):
     id: int
 
 
-class UserLogin(SQLModel):
+class atualUserLogin(SQLModel):
     email: str
     password: str = Field(min_length=6)
+
+
+class Token(SQLModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserRead
 
 
 class RecordBase(SQLModel):

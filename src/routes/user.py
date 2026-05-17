@@ -5,7 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models import User
-from schemas import UserCreate, UserLogin, UserRead, UserUpdate
+from schemas import Token, UserCreate, UserLogin, UserRead, UserUpdate
+from security import create_access_token, get_current_user
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -18,7 +19,7 @@ def verify_password(password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 
-@router.post("/login", response_model=UserRead)
+@router.post("/login", response_model=Token)
 async def login(user_login: UserLogin, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == user_login.email))
     db_user = result.scalar_one_or_none()
@@ -29,7 +30,17 @@ async def login(user_login: UserLogin, db: AsyncSession = Depends(get_db)):
             detail="Incorrect email or password",
         )
 
-    return db_user
+    return {
+        "access_token": create_access_token(db_user),
+        "token_type": "bearer",
+        "user": db_user,
+    }
+
+
+@router.get("/me", response_model=UserRead)
+async def read_current_user(current_user: User = Depends(get_current_user)):
+    return current_user
+
 
 @router.get("/{user_id}", response_model=UserRead)
 async def read_user(user_id: int, db: AsyncSession = Depends(get_db)):
