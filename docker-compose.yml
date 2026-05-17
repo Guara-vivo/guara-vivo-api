@@ -50,6 +50,9 @@ services:
       QUEUE_NAME: ${QUEUE_NAME}
       ERROR_QUEUE_NAME: ${ERROR_QUEUE_NAME}
       IA_API_URL: ${IA_API_URL}
+      DEBUG_SAVE_IMAGES_DIR: ${DEBUG_SAVE_IMAGES_DIR:-/debug/worker-images}
+    volumes:
+      - ../guara-vivo-worker/debug-images:/debug/worker-images
     depends_on:
       rabbitmq:
         condition: service_healthy
