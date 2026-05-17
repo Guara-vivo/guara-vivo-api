@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models import Record, User
+from rabbitmq import publish_record_for_inference
 from schemas import RecordCreate, RecordRead, RecordUpdate
 from security import get_current_user
 
@@ -41,6 +42,16 @@ async def create_record(
     db.add(db_record)
     await db.commit()
     await db.refresh(db_record)
+
+    try:
+        publish_record_for_inference(db_record.id)
+    except Exception as exc:
+        db_record.status = "failed"
+        await db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Record created but could not be queued for inference",
+        ) from exc
 
     return db_record
 
