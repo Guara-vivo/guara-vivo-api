@@ -38,6 +38,10 @@ python src/main.py
 - Apply migrations with `alembic upgrade head` before starting the API.
 - Create a migration after model changes with `alembic revision --autogenerate -m "message"`, then review the generated file before applying it.
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
+- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95`.
+- `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
+- `d3a87201af95_add_status_column_to_records_table.py` adds `records.status`, backfills existing rows to `pending`, and makes it `NOT NULL`.
+- If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
 - Alembic remains synchronous and reads `DATABASE_URL` from `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
 
@@ -63,7 +67,10 @@ python src/seed.py
 
 - `Record.status` is required and defaults to `pending`.
 - Allowed record statuses: `pending`, `processing`, `completed`, `failed`.
+- `Record.status` is persisted in the `records.status` column and must stay aligned between `src/models/record.py`, `src/schemas.py`, and Alembic migrations.
 - `Record.images` and `Record.behavior` use PostgreSQL `ARRAY(String)`, so PostgreSQL support is required.
+- `Analysis` currently stores only `id`, `ibis_quantity`, `datetime`, and `recorder_id`; do not reintroduce `flock_size`, `latitude`, or `longitude` unless there is a new schema requirement and migration.
+- `Analysis.recorder_id` is a unique foreign key to `records.id`, representing a one-to-one relationship between a record and its analysis.
 - Table models live under `src/models/` and should be used for persistence only.
 - Request/response schemas live in `src/schemas.py`.
 
@@ -104,6 +111,7 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 - Startup seeds admin user only; sample `Record`, `Analysis`, and `Ibis` rows are not created automatically.
 - `database.db` was removed and is ignored.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
+- Production schema has been migrated to Alembic head `d3a87201af95`: `analyses` no longer has unused location/flock fields and `records.status` exists with existing rows set to `pending`.
 
 ## Response Style
 
