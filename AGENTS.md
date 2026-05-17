@@ -60,12 +60,13 @@ python src/main.py
 - Apply migrations with `alembic upgrade head` before starting the API.
 - Create a migration after model changes with `alembic revision --autogenerate -m "message"`, then review the generated file before applying it.
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
-- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004`.
+- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005`.
 - `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
 - `d3a87201af95_add_status_column_to_records_table.py` adds `records.status`, backfills existing rows to `pending`, and makes it `NOT NULL`.
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
 - `20260517_0003_add_security_performance_indexes.py` adds a unique index on `users.email` plus indexes on `records.user_id` and `ibis.analysis_id`.
 - `20260517_0004_fix_records_images_array_type.py` fixes existing databases where `records.images` was created as `varchar` instead of `varchar[]`.
+- `20260517_0005_add_unique_constraint_to_analyses_recorder_id.py` adds the unique constraint required by worker upserts on `analyses.recorder_id`.
 - If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
 - Alembic remains synchronous and reads `DATABASE_URL` from process env or `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
@@ -78,6 +79,7 @@ python src/main.py
 - RabbitMQ connection variables: `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`.
 - Worker error queue is configured by `ERROR_QUEUE_NAME`, currently `guara-vermelho-inference-error`.
 - Worker calls `IA_API_URL`, currently `http://identifier:8000/guara-vermelho/inference` inside Docker.
+- Worker debug downloads are controlled by `DEBUG_SAVE_IMAGES_DIR`; in Docker Compose they are saved under `../guara-vivo-worker/debug-images`.
 - If publishing to RabbitMQ fails during record creation, the API sets the record status to `failed` and returns an HTTP error.
 - Keep the worker write logic aligned with the current `analyses` schema: only `id`, `ibis_quantity`, `datetime`, and `recorder_id`.
 
@@ -131,7 +133,7 @@ python src/seed.py
 - `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE` tune SQLAlchemy async pool behavior.
 - `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, and `QUEUE_NAME` configure API queue publishing.
 - `RABBITMQ_DEFAULT_USER` and `RABBITMQ_DEFAULT_PASS` configure the local RabbitMQ Docker container.
-- `ERROR_QUEUE_NAME` and `IA_API_URL` are used by the worker container.
+- `ERROR_QUEUE_NAME`, `IA_API_URL`, and `DEBUG_SAVE_IMAGES_DIR` are used by the worker container.
 - Do not commit `.env`, `.env.docker-compose`, real Supabase URLs, JWT secrets, or RabbitMQ passwords.
 
 ## Request Hardening
@@ -201,7 +203,7 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 - `database.db` was removed and is ignored.
 - Local Docker Compose includes RabbitMQ but no database container.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
-- Production schema has been migrated to Alembic head `20260517_0004`: `analyses` no longer has unused location/flock fields, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, and key lookup indexes exist.
+- Production schema has been migrated to Alembic head `20260517_0005`: `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, and key lookup indexes exist.
 
 ## Response Style
 
