@@ -1,7 +1,7 @@
 from sqlmodel import SQLModel, Field, Relationship
 from datetime import datetime
 from typing import List, Literal, Optional, TYPE_CHECKING
-from sqlalchemy import CheckConstraint, Column, ARRAY, String
+from sqlalchemy import CheckConstraint, Column, ARRAY, DateTime, String
 
 if TYPE_CHECKING:
     from models.analysis import Analysis
@@ -23,7 +23,7 @@ class Record(SQLModel, table=True):
     latitude_camera: float
     longitude_camera: float
     behavior: List[birdbehavior] = Field(sa_column=Column(ARRAY(String)))
-    date_time: datetime
+    date_time: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     user_id: int = Field(foreign_key="users.id", index=True)
     status: str = Field(default="pending", sa_column=Column(String, nullable=False))
     analysis: Optional["Analysis"] = Relationship(

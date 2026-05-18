@@ -40,7 +40,7 @@ async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Reco
         await db.commit()
         raise HTTPException(
             status_code=503,
-            detail="Record created but could not be queued for inference",
+            detail=f"Record created but could not be queued for inference: {exc}",
         ) from exc
 
     return db_record

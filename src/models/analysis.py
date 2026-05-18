@@ -1,6 +1,7 @@
 from sqlmodel import SQLModel, Field, Relationship
-from datetime import datetime
+from datetime import datetime as DateTimeType
 from typing import List, Optional, TYPE_CHECKING
+from sqlalchemy import Column, DateTime
 
 if TYPE_CHECKING:
     from models.ibis import Ibis
@@ -11,7 +12,7 @@ class Analysis(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     ibis_quantity: int
-    datetime: datetime
+    datetime: DateTimeType = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     recorder_id: int = Field(foreign_key="records.id", unique=True)
     record: "Record" = Relationship(back_populates="analysis")
     birds: List["Ibis"] = Relationship(back_populates="analysis")

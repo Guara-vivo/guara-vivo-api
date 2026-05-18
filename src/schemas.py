@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Literal, Optional
 
 from pydantic import EmailStr, Field, field_validator
@@ -7,6 +7,12 @@ from sqlmodel import SQLModel
 
 BirdBehavior = Literal["ninhando", "vocalizando", "alimentando-se", "voando"]
 RecordStatus = Literal["pending", "processing", "completed", "failed"]
+
+
+def normalize_timezone(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class UserBase(SQLModel):
@@ -89,6 +95,11 @@ class RecordBase(SQLModel):
                 raise ValueError("image references must be between 1 and 2048 characters")
         return images
 
+    @field_validator("date_time")
+    @classmethod
+    def normalize_date_time(cls, value: datetime) -> datetime:
+        return normalize_timezone(value)
+
 
 class RecordCreate(RecordBase):
     pass
@@ -108,6 +119,11 @@ class AnalysisBase(SQLModel):
     ibis_quantity: int = Field(ge=0, le=100000)
     datetime: datetime
     recorder_id: int
+
+    @field_validator("datetime")
+    @classmethod
+    def normalize_datetime(cls, value: datetime) -> datetime:
+        return normalize_timezone(value)
 
 
 class AnalysisCreate(AnalysisBase):
