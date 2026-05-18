@@ -49,8 +49,17 @@ class UserLogin(SQLModel):
 
 class Token(SQLModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     user: UserRead
+
+
+class RefreshTokenRequest(SQLModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class LogoutRequest(SQLModel):
+    refresh_token: str = Field(min_length=1)
 
 
 class RecordBase(SQLModel):
@@ -115,6 +124,11 @@ class RecordRead(RecordBase):
     id: int
 
 
+class RecordSummaryRead(RecordRead):
+    analysis_id: Optional[int] = None
+    ibis_quantity: Optional[int] = None
+
+
 class AnalysisBase(SQLModel):
     ibis_quantity: int = Field(ge=0, le=100000)
     datetime: datetime
@@ -154,3 +168,8 @@ class IbisUpdate(IbisBase):
 
 class IbisRead(IbisBase):
     id: int
+
+
+class RecordDetailRead(RecordRead):
+    analysis: Optional[AnalysisRead] = None
+    ibis: List[IbisRead] = Field(default_factory=list)

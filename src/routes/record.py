@@ -1,18 +1,77 @@
 import json
+import hashlib
+import os
+import time
 from datetime import datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
-from models import Record, User
+from models import Analysis, Ibis, Record, User
 from rabbitmq import publish_record_for_inference
-from schemas import RecordCreate, RecordRead, RecordUpdate
+from schemas import AnalysisRead, IbisRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
 from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
 
 router = APIRouter(prefix="/records", tags=["records"])
+RECORDS_CACHE_TTL_SECONDS = int(os.getenv("RECORDS_CACHE_TTL_SECONDS", "30"))
+_records_cache: dict[str, tuple[float, str, Any]] = {}
+
+
+def get_cache_key(*parts: object) -> str:
+    return ":".join(str(part) for part in parts)
+
+
+def build_etag(payload: Any) -> str:
+    encoded = json.dumps(
+        jsonable_encoder(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f'"{hashlib.sha256(encoded.encode("utf-8")).hexdigest()}"'
+
+
+def get_cached_payload(request: Request, response: Response, cache_key: str) -> Response | Any | None:
+    cached = _records_cache.get(cache_key)
+
+    if cached is None:
+        return None
+
+    timestamp, etag, payload = cached
+    if time.monotonic() - timestamp > RECORDS_CACHE_TTL_SECONDS:
+        _records_cache.pop(cache_key, None)
+        return None
+
+    headers = {
+        "Cache-Control": f"private, max-age={RECORDS_CACHE_TTL_SECONDS}",
+        "ETag": etag,
+    }
+    for name, value in headers.items():
+        response.headers[name] = value
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+
+    return payload
+
+
+def set_cached_payload(response: Response, cache_key: str, payload: Any) -> Any:
+    etag = build_etag(payload)
+    _records_cache[cache_key] = (time.monotonic(), etag, payload)
+    response.headers["Cache-Control"] = f"private, max-age={RECORDS_CACHE_TTL_SECONDS}"
+    response.headers["ETag"] = etag
+    return payload
+
+
+def invalidate_records_cache(user_id: int) -> None:
+    prefix = f"records:{user_id}:"
+    for cache_key in list(_records_cache):
+        if cache_key.startswith(prefix):
+            _records_cache.pop(cache_key, None)
 
 
 def parse_behavior_form_values(values: list[str]) -> list[str]:
@@ -38,12 +97,38 @@ async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Reco
     except Exception as exc:
         db_record.status = "failed"
         await db.commit()
+        invalidate_records_cache(db_record.user_id)
         raise HTTPException(
             status_code=503,
             detail=f"Record created but could not be queued for inference: {exc}",
         ) from exc
 
+    invalidate_records_cache(db_record.user_id)
     return db_record
+
+
+def serialize_record_summary(record: Record, analysis: Analysis | None) -> dict[str, Any]:
+    payload = RecordRead.model_validate(record).model_dump(mode="json")
+    payload["analysis_id"] = analysis.id if analysis else None
+    payload["ibis_quantity"] = analysis.ibis_quantity if analysis else None
+    return payload
+
+
+def serialize_record_detail(
+    record: Record,
+    analysis: Analysis | None,
+    ibis_items: list[Ibis],
+) -> dict[str, Any]:
+    payload = RecordRead.model_validate(record).model_dump(mode="json")
+    payload["analysis"] = (
+        AnalysisRead.model_validate(analysis).model_dump(mode="json")
+        if analysis
+        else None
+    )
+    payload["ibis"] = [
+        IbisRead.model_validate(item).model_dump(mode="json") for item in ibis_items
+    ]
+    return payload
 
 @router.get("/", response_model=list[RecordRead])
 async def read_records(
@@ -60,6 +145,72 @@ async def read_records(
         .limit(limit)
     )
     return result.scalars().all()
+
+
+@router.get("/summary", response_model=list[RecordSummaryRead])
+async def read_record_summaries(
+    request: Request,
+    response: Response,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cache_key = get_cache_key("records", current_user.id, "summary", skip, limit)
+    cached = get_cached_payload(request, response, cache_key)
+    if cached is not None:
+        return cached
+
+    result = await db.execute(
+        select(Record, Analysis)
+        .outerjoin(Analysis, Analysis.recorder_id == Record.id)
+        .where(Record.user_id == current_user.id)
+        .order_by(Record.id)
+        .offset(skip)
+        .limit(limit)
+    )
+    payload = [serialize_record_summary(record, analysis) for record, analysis in result.all()]
+    return set_cached_payload(response, cache_key, payload)
+
+
+@router.get("/{record_id}/detail", response_model=RecordDetailRead)
+async def read_record_detail(
+    record_id: int,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cache_key = get_cache_key("records", current_user.id, "detail", record_id)
+    cached = get_cached_payload(request, response, cache_key)
+    if cached is not None:
+        return cached
+
+    result = await db.execute(
+        select(Record, Analysis)
+        .outerjoin(Analysis, Analysis.recorder_id == Record.id)
+        .where(Record.id == record_id)
+    )
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    record, analysis = row
+    if record.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    ibis_items: list[Ibis] = []
+    if analysis is not None:
+        ibis_result = await db.execute(
+            select(Ibis)
+            .where(Ibis.analysis_id == analysis.id)
+            .order_by(Ibis.id)
+        )
+        ibis_items = list(ibis_result.scalars().all())
+
+    payload = serialize_record_detail(record, analysis, ibis_items)
+    return set_cached_payload(response, cache_key, payload)
 
 @router.get("/{record_id}", response_model=RecordRead)
 async def read_record(
@@ -169,6 +320,7 @@ async def update_record(
     record.status = updated_record.status
     await db.commit()
     await db.refresh(record)
+    invalidate_records_cache(current_user.id)
 
     return record
 
@@ -189,5 +341,6 @@ async def delete_record(
     
     await db.delete(record)
     await db.commit()
+    invalidate_records_cache(current_user.id)
 
     return {"detail": "Record deleted successfully"}
