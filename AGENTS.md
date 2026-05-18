@@ -61,13 +61,15 @@ python src/main.py
 - Apply migrations with `alembic upgrade head` before starting the API.
 - Create a migration after model changes with `alembic revision --autogenerate -m "message"`, then review the generated file before applying it.
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
-- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005`.
+- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007`.
 - `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
 - `d3a87201af95_add_status_column_to_records_table.py` adds `records.status`, backfills existing rows to `pending`, and makes it `NOT NULL`.
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
 - `20260517_0003_add_security_performance_indexes.py` adds a unique index on `users.email` plus indexes on `records.user_id` and `ibis.analysis_id`.
 - `20260517_0004_fix_records_images_array_type.py` fixes existing databases where `records.images` was created as `varchar` instead of `varchar[]`.
 - `20260517_0005_add_unique_constraint_to_analyses_recorder_id.py` adds the unique constraint required by worker upserts on `analyses.recorder_id`.
+- `20260518_0006_make_datetimes_timezone_aware.py` converts `analyses.datetime`, `ibis.datetime`, and other timestamp columns to `DateTime(timezone=True)` for UTC consistency.
+- `20260518_0007_add_refresh_tokens.py` creates the `refresh_tokens` table with `user_id`, `token_hash`, `jti`, `expires_at`, `revoked_at`, `created_at`, `replaced_by_token_id`, `user_agent`, and `ip_address` columns.
 - If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
 - Alembic remains synchronous and reads `DATABASE_URL` from process env or `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
@@ -97,7 +99,8 @@ python src/seed.py
 ## API Endpoints
 
 - `GET /docs` - Swagger UI
-- `/users/login` - POST, validates email/password and returns a JWT access token plus user data
+- `/users/login` - POST, validates email/password and returns a JWT access token, refresh token, and user data
+- `/users/refresh` - POST, validates refresh token and issues new access/refresh token pair
 - `/users/me` - GET, protected endpoint that returns the current authenticated user from `Authorization: Bearer <token>`
 - `/users/{id}` - GET, PUT, DELETE protected by JWT and limited to the authenticated user
 - `/records` - CRUD on records; create/update/delete require JWT and ownership through `user_id`
@@ -111,19 +114,24 @@ python src/seed.py
 - Passwords are required for users and must be stored only as bcrypt hashes.
 - Use `bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")` for hashing and `bcrypt.checkpw()` for verification.
 - `src/routes/user.py` owns password hashing, password verification, user creation/update, and login.
-- `src/security.py` owns JWT access-token creation and current-user validation.
-- Login returns a stateless JWT access token with `token_type="bearer"` and the authenticated `UserRead` payload.
+- `src/security.py` owns JWT access-token creation, refresh-token management, and current-user validation.
+- Login returns a JWT access token with `token_type="bearer"`, a refresh token, and the authenticated `UserRead` payload.
 - Login has a simple in-memory per-process rate limit: 5 attempts per client IP per 60 seconds.
-- JWT payload includes `sub` as the user id, `email`, `type="access"`, `iat`, and `exp`.
+- JWT access token payload includes `sub` as the user id, `email`, `type="access"`, `iat`, and `exp`.
+- JWT refresh token payload includes `sub` as the user id, `type="refresh"`, `jti` (unique token identifier), `iat`, and `exp`.
 - Access tokens currently expire after 1 hour by default (`JWT_ACCESS_TOKEN_EXPIRE=3600`).
-- No refresh token or remote logout is implemented yet.
+- Refresh tokens are long-lived and persisted in the `refresh_tokens` table for revocation support.
+- Refresh token rotation is implemented: when a refresh token is used to issue a new access token, the old refresh token is marked with `replaced_by_token_id`.
+- `POST /users/refresh` endpoint validates refresh tokens and issues new access/refresh token pairs.
+- Refresh token revocation is tracked via `revoked_at` column and `replaced_by_token_id` linkage.
 - Protected endpoints should depend on `get_current_user` from `src/security.py`.
 - User read/update/delete routes require the authenticated user's own id.
 - Record, analysis, and ibis read endpoints require JWT and must return only resources owned by the authenticated user.
 - Record writes require JWT and `record.user_id` must match the authenticated user.
 - Analysis and ibis writes require JWT and ownership through the associated record.
-- Frontends should persist the returned `access_token` and send `Authorization: Bearer <access_token>` on protected requests.
-- Frontends can call `GET /users/me` to validate an existing session.
+- Frontends should persist both `access_token` and `refresh_token` and send `Authorization: Bearer <access_token>` on protected requests.
+- Frontends can call `GET /users/me` to validate an existing session or `POST /users/refresh` to obtain a new access token before expiration.
+- Optional user metadata (user_agent, ip_address) is captured on token issuance for security auditing.
 
 ## Environment
 
@@ -158,6 +166,8 @@ python src/seed.py
 - `User.email` is validated with `EmailStr`, normalized to lowercase in request schemas, and must be unique in the database.
 - `Analysis` currently stores only `id`, `ibis_quantity`, `datetime`, and `recorder_id`; do not reintroduce `flock_size`, `latitude`, or `longitude` unless there is a new schema requirement and migration.
 - `Analysis.recorder_id` is a unique foreign key to `records.id`, representing a one-to-one relationship between a record and its analysis.
+- `RefreshToken` persists refresh tokens with `token_hash`, `jti`, `expires_at`, `revoked_at`, `created_at`, `replaced_by_token_id`, `user_agent`, and `ip_address` for rotation and audit tracking.
+- All datetime columns (`analyses.datetime`, `ibis.datetime`, `records.created_at`, `refresh_tokens.created_at/expires_at/revoked_at`) use `DateTime(timezone=True)` for UTC consistency.
 - Table models live under `src/models/` and should be used for persistence only.
 - Request/response schemas live in `src/schemas.py`.
 - `email-validator` is required by Pydantic's `EmailStr`; keep it in `requirements.txt`.
@@ -210,7 +220,7 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 - `database.db` was removed and is ignored.
 - Local Docker Compose includes RabbitMQ but no database container.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
-- Production schema has been migrated to Alembic head `20260517_0005`: `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, and key lookup indexes exist.
+- Production schema has been migrated to Alembic head `20260518_0007`: `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and rotation, and key lookup indexes exist.
 
 ## Response Style
 
