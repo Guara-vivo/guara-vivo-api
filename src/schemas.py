@@ -99,6 +99,8 @@ class RecordUpdate(RecordBase):
 
 
 class RecordRead(RecordBase):
+    images: List[str] = Field(max_length=20)
+    behavior: List[BirdBehavior] = Field(max_length=20)
     id: int
 
 
