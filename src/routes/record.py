@@ -50,17 +50,31 @@ async def read_records(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Record).order_by(Record.id).offset(skip).limit(limit))
+    result = await db.execute(
+        select(Record)
+        .where(Record.user_id == current_user.id)
+        .order_by(Record.id)
+        .offset(skip)
+        .limit(limit)
+    )
     return result.scalars().all()
 
 @router.get("/{record_id}", response_model=RecordRead)
-async def read_record(record_id: int, db: AsyncSession = Depends(get_db)):
+async def read_record(
+    record_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     result = await db.execute(select(Record).where(Record.id == record_id))
     record = result.scalar_one_or_none()
 
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found")
+
+    if record.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
     
     return record
 

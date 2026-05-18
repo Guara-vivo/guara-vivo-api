@@ -119,6 +119,7 @@ python src/seed.py
 - No refresh token or remote logout is implemented yet.
 - Protected endpoints should depend on `get_current_user` from `src/security.py`.
 - User read/update/delete routes require the authenticated user's own id.
+- Record, analysis, and ibis read endpoints require JWT and must return only resources owned by the authenticated user.
 - Record writes require JWT and `record.user_id` must match the authenticated user.
 - Analysis and ibis writes require JWT and ownership through the associated record.
 - Frontends should persist the returned `access_token` and send `Authorization: Bearer <access_token>` on protected requests.
@@ -174,6 +175,7 @@ python src/seed.py
 - Prefer explicit field assignment in route updates.
 - Do not expose `User.password` in response models; use `UserRead` for user responses.
 - Keep request schemas bounded with `min_length`, `max_length`, and numeric ranges where applicable.
+- Validate ownership before reads and writes for user-scoped resources.
 - Validate ownership before writes that reference foreign keys. Records belong to `record.user_id`; analyses and ibis inherit ownership through the associated record.
 - Keep record creation publishing to RabbitMQ after the database commit so queued jobs reference persisted rows.
 - Keep the Supabase service role key backend-only; never send it to the frontend.
