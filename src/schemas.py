@@ -168,8 +168,34 @@ class IbisUpdate(IbisBase):
 
 class IbisRead(IbisBase):
     id: int
+    analysis_image_id: Optional[int] = None
+    raw_detection: Optional[str] = None
+
+
+class AnalysisImageBase(SQLModel):
+    analysis_id: int
+    record_id: int
+    image_index: int
+    image_url: str
+    ibis_quantity: int
+    raw_result: Optional[str] = None
+
+
+class AnalysisImageCreate(AnalysisImageBase):
+    pass
+
+
+class AnalysisImageRead(AnalysisImageBase):
+    id: int
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def normalize_created_at(cls, value: datetime) -> datetime:
+        return normalize_timezone(value)
 
 
 class RecordDetailRead(RecordRead):
     analysis: Optional[AnalysisRead] = None
     ibis: List[IbisRead] = Field(default_factory=list)
+    image_analyses: List[AnalysisImageRead] = Field(default_factory=list)

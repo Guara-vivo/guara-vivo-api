@@ -11,9 +11,9 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
-from models import Analysis, Ibis, Record, User
+from models import Analysis, AnalysisImage, Ibis, Record, User
 from rabbitmq import publish_record_for_inference
-from schemas import AnalysisRead, IbisRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
+from schemas import AnalysisImageRead, AnalysisRead, IbisRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
 from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
 
@@ -118,6 +118,7 @@ def serialize_record_detail(
     record: Record,
     analysis: Analysis | None,
     ibis_items: list[Ibis],
+    image_analyses: list[AnalysisImage],
 ) -> dict[str, Any]:
     payload = RecordRead.model_validate(record).model_dump(mode="json")
     payload["analysis"] = (
@@ -127,6 +128,9 @@ def serialize_record_detail(
     )
     payload["ibis"] = [
         IbisRead.model_validate(item).model_dump(mode="json") for item in ibis_items
+    ]
+    payload["image_analyses"] = [
+        AnalysisImageRead.model_validate(item).model_dump(mode="json") for item in image_analyses
     ]
     return payload
 
@@ -209,7 +213,15 @@ async def read_record_detail(
         )
         ibis_items = list(ibis_result.scalars().all())
 
-    payload = serialize_record_detail(record, analysis, ibis_items)
+    # Fetch per-image analyses
+    image_analyses_result = await db.execute(
+        select(AnalysisImage)
+        .where(AnalysisImage.record_id == record_id)
+        .order_by(AnalysisImage.image_index)
+    )
+    image_analyses = list(image_analyses_result.scalars().all())
+
+    payload = serialize_record_detail(record, analysis, ibis_items, image_analyses)
     return set_cached_payload(response, cache_key, payload)
 
 @router.get("/{record_id}", response_model=RecordRead)
