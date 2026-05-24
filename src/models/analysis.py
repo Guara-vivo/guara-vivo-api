@@ -6,6 +6,7 @@ from sqlalchemy import Column, DateTime
 if TYPE_CHECKING:
     from models.ibis import Ibis
     from models.record import Record
+    from models.analysis_image import AnalysisImage
 
 class Analysis(SQLModel, table=True):
     __tablename__ = "analyses"
@@ -16,6 +17,7 @@ class Analysis(SQLModel, table=True):
     recorder_id: int = Field(foreign_key="records.id", unique=True)
     record: "Record" = Relationship(back_populates="analysis")
     birds: List["Ibis"] = Relationship(back_populates="analysis")
+    image_analyses: List["AnalysisImage"] = Relationship(back_populates="analysis")
 
     class Config:
         from_attributes = True

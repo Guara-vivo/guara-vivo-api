@@ -8,7 +8,7 @@
 - PostgreSQL is external in Supabase. There is no local Postgres service in `docker-compose.yml`.
 - Uploaded frontend images are stored in Supabase Storage bucket `frontend-uploads`; `records.images` stores public URLs.
 - RabbitMQ runs locally through Docker Compose with the management UI on port `15672`.
-- Inference flow: frontend creates a record -> API inserts `records` row -> API publishes `record_id` to RabbitMQ -> worker calls identifier -> worker writes `analyses` and `ibis` rows.
+- Inference flow: frontend creates a record -> API inserts `records` row -> API publishes `record_id` to RabbitMQ -> worker calls identifier -> worker writes aggregate `analyses`, per-image `analysis_images`, and per-detection `ibis` rows.
 
 ## Quick Start
 
@@ -61,7 +61,7 @@ python src/main.py
 - Apply migrations with `alembic upgrade head` before starting the API.
 - Create a migration after model changes with `alembic revision --autogenerate -m "message"`, then review the generated file before applying it.
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
-- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007`.
+- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007` -> `20260520_0008`.
 - `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
 - `d3a87201af95_add_status_column_to_records_table.py` adds `records.status`, backfills existing rows to `pending`, and makes it `NOT NULL`.
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
@@ -70,6 +70,7 @@ python src/main.py
 - `20260517_0005_add_unique_constraint_to_analyses_recorder_id.py` adds the unique constraint required by worker upserts on `analyses.recorder_id`.
 - `20260518_0006_make_datetimes_timezone_aware.py` converts `analyses.datetime`, `ibis.datetime`, and other timestamp columns to `DateTime(timezone=True)` for UTC consistency.
 - `20260518_0007_add_refresh_tokens.py` creates the `refresh_tokens` table with `user_id`, `token_hash`, `jti`, `expires_at`, `revoked_at`, `created_at`, `replaced_by_token_id`, `user_agent`, and `ip_address` columns.
+- `20260520_0008_add_per_image_analysis.py` creates `analysis_images` and adds nullable `ibis.analysis_image_id` for image-level detections.
 - If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
 - Alembic remains synchronous and reads `DATABASE_URL` from process env or `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
@@ -84,7 +85,8 @@ python src/main.py
 - Worker calls `IA_API_URL`, currently `http://identifier:8000/guara-vermelho/inference` inside Docker.
 - Worker debug downloads are controlled by `DEBUG_SAVE_IMAGES_DIR`; in Docker Compose they are saved under `../guara-vivo-worker/debug-images`.
 - If publishing to RabbitMQ fails during record creation, the API sets the record status to `failed` and returns an HTTP error.
-- Keep the worker write logic aligned with the current `analyses` schema: only `id`, `ibis_quantity`, `datetime`, and `recorder_id`.
+- Keep worker writes aligned with the current inference schema: aggregate rows in `analyses`, one row per source image in `analysis_images`, and individual detections in `ibis` linked through `analysis_image_id`.
+- `ibis.raw_detection` stores the full identifier JSON for each detected bird, including `cor`, `fase_vida`, `acuracia.deteccao_yolo`, `acuracia.classificacao_guara`, `acuracia.classificacao_cor`, `acuracia.classificacao_fase_vida`, and optional technical fields such as distance and bounding box.
 
 ## Seed Data
 
@@ -105,6 +107,7 @@ python src/seed.py
 - `/users/{id}` - GET, PUT, DELETE protected by JWT and limited to the authenticated user
 - `/records` - CRUD on records; create/update/delete require JWT and ownership through `user_id`
 - `/records/upload` - POST multipart upload, stores images in Supabase Storage bucket `frontend-uploads`, creates a record, and queues inference
+- `/records/{id}/detail` - GET protected detail endpoint returning the record, aggregate analysis, `ibis`, and ordered `image_analyses` for the authenticated owner
 - `/analysis` - CRUD on analyses; create/update/delete require JWT and ownership through the related record
 - `/ibis` - CRUD on ibis; create/update/delete require JWT and ownership through the related analysis/record
 - List endpoints for `records`, `analysis`, and `ibis` support bounded `skip` and `limit` query params. Default: `skip=0&limit=100`, max `limit=100`.
@@ -166,6 +169,8 @@ python src/seed.py
 - `User.email` is validated with `EmailStr`, normalized to lowercase in request schemas, and must be unique in the database.
 - `Analysis` currently stores only `id`, `ibis_quantity`, `datetime`, and `recorder_id`; do not reintroduce `flock_size`, `latitude`, or `longitude` unless there is a new schema requirement and migration.
 - `Analysis.recorder_id` is a unique foreign key to `records.id`, representing a one-to-one relationship between a record and its analysis.
+- `AnalysisImage` stores per-image inference metadata: `analysis_id`, `record_id`, `image_index`, `image_url`, `ibis_quantity`, `raw_result`, and `created_at`.
+- `Ibis.analysis_image_id` links a detection to the image that produced it. `Ibis.raw_detection` stores the raw identifier result for frontend technical details.
 - `RefreshToken` persists refresh tokens with `token_hash`, `jti`, `expires_at`, `revoked_at`, `created_at`, `replaced_by_token_id`, `user_agent`, and `ip_address` for rotation and audit tracking.
 - All datetime columns (`analyses.datetime`, `ibis.datetime`, `records.created_at`, `refresh_tokens.created_at/expires_at/revoked_at`) use `DateTime(timezone=True)` for UTC consistency.
 - Table models live under `src/models/` and should be used for persistence only.
@@ -220,31 +225,7 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 - `database.db` was removed and is ignored.
 - Local Docker Compose includes RabbitMQ but no database container.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
-- Production schema has been migrated to Alembic head `20260518_0007`: `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and rotation, and key lookup indexes exist.
-
-## Response Style
-
-- Minimal output.
-- No motivational text.
-- No explanations unless requested.
-- No step-by-step reasoning unless requested.
-- Prioritize action over commentary.
-
-## Tool Usage
-
-- Call tools immediately when needed.
-- Avoid asking confirmation for obvious actions.
-- Return concise summaries after execution.
-- Stop after completing requested task.
-
-## Git Commits
-
-- Use short, concise commit messages.
-- Start commit messages with one of these prefixes according to the change: `feature:`, `hotfix:`, or `refactor:`.
-- Before committing, inspect `git status --short`, `git diff`, and `git log --oneline -10`.
-- Stage only files related to the intended change.
-- Never commit `.env`, `.env.docker-compose`, Supabase keys, JWT secrets, RabbitMQ passwords, or debug images.
-
+- Production schema has been migrated to Alembic head `20260520_0008`: `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and rotation, and key lookup indexes exist.
 - **Password Security**: All passwords must be hashed using bcrypt before storage. Use `bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')` for hashing and `bcrypt.checkpw()` for verification. Never store plain text passwords.
 - **JWT Sessions**: Use JWT access tokens from `src/security.py` for post-login sessions. Tokens expire in 1 hour by default, require `JWT_SECRET_KEY`, and should be sent with `Authorization: Bearer <token>`.
 - **Plan Mode**: During planning phases, only generate plans and architecture. Do not output code blocks or file modifications. Wait for explicit implementation command before making any changes.
