@@ -24,13 +24,21 @@ def get_cors_origins() -> list[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
-        # simple seed: create one admin user if DB is empty
-        result = await db.execute(select(User).limit(1))
-        if result.scalar_one_or_none() is None:
-            admin_password = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode("utf-8")
-            admin = User(name="admin", email="admin@example.com", password=admin_password)
-            db.add(admin)
-            await db.commit()
+        # Admin seed only if ADMIN_EMAIL and ADMIN_PASSWORD are provided
+        admin_email = os.getenv("ADMIN_EMAIL")
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        
+        if admin_email and admin_password:
+            # Check if admin already exists
+            result = await db.execute(select(User).where(User.email == admin_email.lower()))
+            admin_user = result.scalar_one_or_none()
+            
+            if admin_user is None:
+                # Create admin with provided credentials
+                hashed_password = bcrypt.hashpw(admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                admin_user = User(email=admin_email.lower(), password=hashed_password)
+                db.add(admin_user)
+                await db.commit()
 
     yield
 

@@ -77,7 +77,7 @@ Ver migration atual:
 alembic current
 ```
 
-O head atual esperado é `20260517_0003`.
+O head atual esperado é `20260520_0008`.
 
 O app não cria tabelas automaticamente no startup. Toda alteração persistente de schema deve ser feita via Alembic.
 
@@ -109,14 +109,16 @@ http://localhost:8001/docs
 
 ## Usuário Admin Inicial
 
-No startup, se a tabela `users` estiver vazia, a API cria um usuário admin:
+No startup, se as variáveis `ADMIN_EMAIL` e `ADMIN_PASSWORD` forem configuradas e nenhum admin existir, a API cria um usuário admin automaticamente:
 
-```text
-email: admin@example.com
-senha: admin123
+```env
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=replace-with-secure-password
 ```
 
-A senha é armazenada como hash bcrypt.
+Se essas variáveis não forem definidas, nenhum admin é criado no startup. O primeiro usuário deve ser criado manualmente via SQL ou via API após uma migração manual.
+
+A senha é sempre armazenada como hash bcrypt, nunca em texto plano.
 
 ## Autenticação
 
@@ -131,7 +133,7 @@ Body:
 ```json
 {
   "email": "admin@example.com",
-  "password": "admin123"
+  "password": "your-configured-password"
 }
 ```
 
