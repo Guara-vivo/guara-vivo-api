@@ -37,14 +37,12 @@ async def read_analysis(
     analysis = result.scalar_one_or_none()
 
     if analysis is None:
-        raise HTTPException(status_code=404, detail="Analysis not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
     result = await db.execute(select(Record).where(Record.id == analysis.recorder_id))
     record = result.scalar_one_or_none()
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
-    if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
     
     return analysis
 
@@ -56,10 +54,8 @@ async def create_analysis(
 ):
     result = await db.execute(select(Record).where(Record.id == analysis.recorder_id))
     record = result.scalar_one_or_none()
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
-    if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
 
     db_analysis = Analysis(**analysis.model_dump())
 
@@ -80,21 +76,17 @@ async def update_analysis(
     analysis = result.scalar_one_or_none()
 
     if analysis is None:
-        raise HTTPException(status_code=404, detail="Analysis not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
     result = await db.execute(select(Record).where(Record.id == analysis.recorder_id))
     current_record = result.scalar_one_or_none()
-    if current_record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
-    if current_record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if current_record is None or current_record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
 
     result = await db.execute(select(Record).where(Record.id == updated_analysis.recorder_id))
     record = result.scalar_one_or_none()
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
-    if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
 
     analysis.ibis_quantity = updated_analysis.ibis_quantity
     analysis.datetime = updated_analysis.datetime
@@ -114,14 +106,12 @@ async def delete_analysis(
     analysis = result.scalar_one_or_none()
 
     if analysis is None:
-        raise HTTPException(status_code=404, detail="Analysis not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
     result = await db.execute(select(Record).where(Record.id == analysis.recorder_id))
     record = result.scalar_one_or_none()
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
-    if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
     
     await db.delete(analysis)
     await db.commit()

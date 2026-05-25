@@ -203,7 +203,7 @@ async def read_record_detail(
 
     record, analysis = row
     if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        raise HTTPException(status_code=404, detail="Not found")
 
     ibis_items: list[Ibis] = []
     if analysis is not None:
@@ -248,6 +248,7 @@ async def create_record(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Ensure user_id matches authenticated user
     if record.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
@@ -328,10 +329,10 @@ async def update_record(
     result = await db.execute(select(Record).where(Record.id == record_id))
     record = result.scalar_one_or_none()
 
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
 
-    if record.user_id != current_user.id or updated_record.user_id != current_user.id:
+    if updated_record.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     record.images = updated_record.images
@@ -356,12 +357,9 @@ async def delete_record(
     result = await db.execute(select(Record).where(Record.id == record_id))
     record = result.scalar_one_or_none()
 
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
 
-    if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    
     await db.delete(record)
     await db.commit()
     invalidate_records_cache(current_user.id)
