@@ -268,13 +268,21 @@ async def create_record_with_upload(
     if not 1 <= len(images) <= 20:
         raise HTTPException(status_code=422, detail="images must contain between 1 and 20 files")
 
+    MAX_TOTAL_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB aggregate limit
     public_urls = []
+    total_size = 0
+    
     for image in images:
         content = await image.read()
         if not content:
             raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is empty")
         if len(content) > MAX_UPLOAD_FILE_BYTES:
             raise HTTPException(status_code=413, detail=f"{image.filename or 'file'} is too large")
+        
+        # Check aggregate size limit
+        total_size += len(content)
+        if total_size > MAX_TOTAL_UPLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="Total upload size exceeds limit (100MB)")
         
         # Validate file by magic bytes
         validate_image_file(image.filename or "file", content)
@@ -290,6 +298,9 @@ async def create_record_with_upload(
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Could not upload image to Supabase: {exc}") from exc
+        
+        # Explicitly release memory after each file
+        del content
 
     try:
         record = RecordCreate(
