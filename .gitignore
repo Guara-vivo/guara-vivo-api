@@ -162,4 +162,7 @@ __pypackages__/
 # Uncomment to ignore pipenv lock files:
 # Pipfile.lock
 
+# Git worktrees
+.worktrees/
+
 # End of file
