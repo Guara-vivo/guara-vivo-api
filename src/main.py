@@ -11,9 +11,7 @@ from sqlalchemy import select
 from routes import user, record, analysis, ibis
 from database import AsyncSessionLocal
 from models import User
-
-
-MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", "10485760"))
+from middleware import BodyLimitMiddleware
 
 
 def get_cors_origins() -> list[str]:
@@ -45,6 +43,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Add body limit middleware first (processes request stream)
+app.add_middleware(BodyLimitMiddleware)
+
 cors_origins = get_cors_origins()
 if cors_origins:
     app.add_middleware(
@@ -57,31 +58,25 @@ if cors_origins:
 
 
 @app.middleware("http")
-async def reject_oversized_or_invalid_json_requests(request: Request, call_next):
+async def validate_request_content_type(request: Request, call_next):
+    # Only validate content-type for methods with body
     if request.method in {"POST", "PUT", "PATCH"}:
-        content_length = request.headers.get("content-length")
-        try:
-            request_body_size = int(content_length) if content_length else 0
-        except ValueError:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "Invalid Content-Length header"},
-            )
-
-        if request_body_size > MAX_REQUEST_BODY_BYTES:
-            return JSONResponse(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                content={"detail": "Request body too large"},
-            )
-
+        # Check if there's a body by looking at content-length or try to get content-type
         content_type = request.headers.get("content-type", "")
-        allowed_content_types = ("application/json", "multipart/form-data")
-        if request_body_size > 0 and not content_type.startswith(allowed_content_types):
-            return JSONResponse(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                content={"detail": "Content-Type must be application/json or multipart/form-data"},
-            )
-
+        content_length = request.headers.get("content-length", "0")
+        
+        # If content-length indicates a body, validate content-type
+        try:
+            if int(content_length) > 0:
+                allowed_content_types = ("application/json", "multipart/form-data")
+                if not content_type.startswith(allowed_content_types):
+                    return JSONResponse(
+                        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                        content={"detail": "Content-Type must be application/json or multipart/form-data"},
+                    )
+        except ValueError:
+            pass
+    
     return await call_next(request)
 
 
