@@ -13,6 +13,7 @@ from security import create_access_token, create_refresh_token, get_current_user
 router = APIRouter(prefix="/users", tags=["users"])
 LOGIN_RATE_LIMIT_MAX = 5
 LOGIN_RATE_LIMIT_WINDOW_SECONDS = 60
+MAX_RATE_LIMIT_ENTRIES = 10000  # Prevent unbounded growth
 _login_attempts: dict[str, list[float]] = {}
 
 
@@ -30,19 +31,29 @@ def verify_password(password: str, hashed_password: str) -> bool:
 def enforce_login_rate_limit(request: Request) -> None:
     client_host = request.client.host if request.client else "unknown"
     now = monotonic()
+    
+    # Prune old entries for this client (older than window)
     attempts = [
         attempt
         for attempt in _login_attempts.get(client_host, [])
         if now - attempt < LOGIN_RATE_LIMIT_WINDOW_SECONDS
     ]
+    
     if len(attempts) >= LOGIN_RATE_LIMIT_MAX:
         _login_attempts[client_host] = attempts
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many login attempts. Try again later.",
         )
+    
     attempts.append(now)
     _login_attempts[client_host] = attempts
+    
+    # Cleanup: remove old IPs if map grows too large
+    if len(_login_attempts) > MAX_RATE_LIMIT_ENTRIES:
+        # Remove entries with no recent attempts
+        _login_attempts.clear()
+        _login_attempts[client_host] = attempts
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
