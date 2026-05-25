@@ -3,8 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
       DATABASE_URL: ${DATABASE_URL}
       PYTHONPATH: /app/src
@@ -38,8 +39,7 @@ services:
     build:
       context: ../guara-vivo-identifier
       dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
+    restart: unless-stopped
     networks:
       - guara-vivo-network
 
@@ -47,6 +47,7 @@ services:
     build:
       context: ../guara-vivo-worker
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -79,9 +80,10 @@ services:
 
   rabbitmq:
     image: rabbitmq:3-management
+    restart: unless-stopped
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}

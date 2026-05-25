@@ -1,0 +1,182 @@
+name: Deploy EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  repository_dispatch:
+    types:
+      - identifier-updated
+      - worker-updated
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Prepare SSH key
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -Eeuo pipefail
+          test -n "${EC2_HOST}" || { echo "EC2_HOST secret is required" >&2; exit 1; }
+          test -n "${EC2_SSH_KEY}" || { echo "EC2_SSH_KEY secret is required" >&2; exit 1; }
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${EC2_SSH_KEY}" > ~/.ssh/guara-vivo-ec2
+          chmod 600 ~/.ssh/guara-vivo-ec2
+          ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Create production env file
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          JWT_ACCESS_TOKEN_EXPIRE: ${{ secrets.JWT_ACCESS_TOKEN_EXPIRE }}
+          JWT_REFRESH_TOKEN_EXPIRE: ${{ secrets.JWT_REFRESH_TOKEN_EXPIRE }}
+          RECORDS_CACHE_TTL_SECONDS: ${{ secrets.RECORDS_CACHE_TTL_SECONDS }}
+          CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+          MAX_REQUEST_BODY_BYTES: ${{ secrets.MAX_REQUEST_BODY_BYTES }}
+          MAX_UPLOAD_FILE_BYTES: ${{ secrets.MAX_UPLOAD_FILE_BYTES }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
+          DATABASE_POOL_SIZE: ${{ secrets.DATABASE_POOL_SIZE }}
+          DATABASE_MAX_OVERFLOW: ${{ secrets.DATABASE_MAX_OVERFLOW }}
+          DATABASE_POOL_TIMEOUT: ${{ secrets.DATABASE_POOL_TIMEOUT }}
+          DATABASE_POOL_RECYCLE: ${{ secrets.DATABASE_POOL_RECYCLE }}
+          RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
+          RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
+          RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
+          RABBITMQ_DEFAULT_PASS: ${{ secrets.RABBITMQ_DEFAULT_PASS }}
+          QUEUE_NAME: ${{ secrets.QUEUE_NAME }}
+          ERROR_QUEUE_NAME: ${{ secrets.ERROR_QUEUE_NAME }}
+          IA_API_URL: ${{ secrets.IA_API_URL }}
+          DEBUG_SAVE_IMAGES_DIR: ${{ secrets.DEBUG_SAVE_IMAGES_DIR }}
+          LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+          MAX_RETRIES: ${{ secrets.MAX_RETRIES }}
+          RABBITMQ_RECONNECT_SECONDS: ${{ secrets.RABBITMQ_RECONNECT_SECONDS }}
+          DOWNLOAD_TIMEOUT_SECONDS: ${{ secrets.DOWNLOAD_TIMEOUT_SECONDS }}
+          IA_TIMEOUT_SECONDS: ${{ secrets.IA_TIMEOUT_SECONDS }}
+          ALLOWED_IMAGE_HOSTS: ${{ secrets.ALLOWED_IMAGE_HOSTS }}
+          MAX_IMAGE_BYTES: ${{ secrets.MAX_IMAGE_BYTES }}
+          RABBITMQ_HEARTBEAT_SECONDS: ${{ secrets.RABBITMQ_HEARTBEAT_SECONDS }}
+          RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS: ${{ secrets.RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS }}
+          DEBUG_MAX_RUNS: ${{ secrets.DEBUG_MAX_RUNS }}
+        run: |
+          set -Eeuo pipefail
+
+          require_secret() {
+            local name="$1"
+            local value="${!name:-}"
+            test -n "${value}" || { echo "${name} secret is required" >&2; exit 1; }
+          }
+
+          require_secret DATABASE_URL
+          require_secret JWT_SECRET_KEY
+          require_secret SUPABASE_URL
+          require_secret SUPABASE_SERVICE_ROLE_KEY
+          require_secret RABBITMQ_USER
+          require_secret RABBITMQ_PASSWORD
+          require_secret RABBITMQ_DEFAULT_USER
+          require_secret RABBITMQ_DEFAULT_PASS
+
+          : "${JWT_ACCESS_TOKEN_EXPIRE:=3600}"
+          : "${JWT_REFRESH_TOKEN_EXPIRE:=2592000}"
+          : "${RECORDS_CACHE_TTL_SECONDS:=30}"
+          : "${MAX_REQUEST_BODY_BYTES:=10485760}"
+          : "${MAX_UPLOAD_FILE_BYTES:=5242880}"
+          : "${SUPABASE_STORAGE_BUCKET:=frontend-uploads}"
+          : "${DATABASE_POOL_SIZE:=5}"
+          : "${DATABASE_MAX_OVERFLOW:=10}"
+          : "${DATABASE_POOL_TIMEOUT:=30}"
+          : "${DATABASE_POOL_RECYCLE:=1800}"
+          : "${QUEUE_NAME:=guara-vermelho-inference}"
+          : "${ERROR_QUEUE_NAME:=guara-vermelho-inference-error}"
+          : "${IA_API_URL:=http://identifier:8000/guara-vermelho/inference}"
+          : "${DEBUG_SAVE_IMAGES_DIR:=/debug/worker-images}"
+          : "${LOG_LEVEL:=INFO}"
+          : "${MAX_RETRIES:=3}"
+          : "${RABBITMQ_RECONNECT_SECONDS:=5}"
+          : "${DOWNLOAD_TIMEOUT_SECONDS:=30}"
+          : "${IA_TIMEOUT_SECONDS:=60}"
+          : "${MAX_IMAGE_BYTES:=10485760}"
+          : "${RABBITMQ_HEARTBEAT_SECONDS:=600}"
+          : "${RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS:=300}"
+          : "${DEBUG_MAX_RUNS:=20}"
+
+          cat > .env.deploy <<EOF
+          DATABASE_URL=${DATABASE_URL}
+          JWT_SECRET_KEY=${JWT_SECRET_KEY}
+          JWT_ACCESS_TOKEN_EXPIRE=${JWT_ACCESS_TOKEN_EXPIRE}
+          JWT_REFRESH_TOKEN_EXPIRE=${JWT_REFRESH_TOKEN_EXPIRE}
+          JWT_ALGORITHM=HS256
+          RECORDS_CACHE_TTL_SECONDS=${RECORDS_CACHE_TTL_SECONDS}
+          CORS_ORIGINS=${CORS_ORIGINS}
+          MAX_REQUEST_BODY_BYTES=${MAX_REQUEST_BODY_BYTES}
+          MAX_UPLOAD_FILE_BYTES=${MAX_UPLOAD_FILE_BYTES}
+          SUPABASE_URL=${SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+          SUPABASE_STORAGE_BUCKET=${SUPABASE_STORAGE_BUCKET}
+          DATABASE_POOL_SIZE=${DATABASE_POOL_SIZE}
+          DATABASE_MAX_OVERFLOW=${DATABASE_MAX_OVERFLOW}
+          DATABASE_POOL_TIMEOUT=${DATABASE_POOL_TIMEOUT}
+          DATABASE_POOL_RECYCLE=${DATABASE_POOL_RECYCLE}
+          RABBITMQ_HOST=rabbitmq
+          RABBITMQ_PORT=5672
+          RABBITMQ_USER=${RABBITMQ_USER}
+          RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+          RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+          RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+          QUEUE_NAME=${QUEUE_NAME}
+          ERROR_QUEUE_NAME=${ERROR_QUEUE_NAME}
+          IA_API_URL=${IA_API_URL}
+          DEBUG_SAVE_IMAGES_DIR=${DEBUG_SAVE_IMAGES_DIR}
+          LOG_LEVEL=${LOG_LEVEL}
+          MAX_RETRIES=${MAX_RETRIES}
+          RABBITMQ_RECONNECT_SECONDS=${RABBITMQ_RECONNECT_SECONDS}
+          DOWNLOAD_TIMEOUT_SECONDS=${DOWNLOAD_TIMEOUT_SECONDS}
+          IA_TIMEOUT_SECONDS=${IA_TIMEOUT_SECONDS}
+          ALLOWED_IMAGE_HOSTS=${ALLOWED_IMAGE_HOSTS}
+          MAX_IMAGE_BYTES=${MAX_IMAGE_BYTES}
+          RABBITMQ_HEARTBEAT_SECONDS=${RABBITMQ_HEARTBEAT_SECONDS}
+          RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS=${RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS}
+          DEBUG_MAX_RUNS=${DEBUG_MAX_RUNS}
+          EOF
+
+          sed -i 's/^          //' .env.deploy
+          chmod 600 .env.deploy
+
+      - name: Upload env file
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          set -Eeuo pipefail
+          : "${EC2_USER:=ubuntu}"
+          scp -i ~/.ssh/guara-vivo-ec2 .env.deploy "${EC2_USER}@${EC2_HOST}:/tmp/guara-vivo.env"
+
+      - name: Deploy on EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          DEPLOY_HEALTHCHECK_URL: ${{ secrets.DEPLOY_HEALTHCHECK_URL }}
+        run: |
+          set -Eeuo pipefail
+          : "${EC2_USER:=ubuntu}"
+          : "${DEPLOY_HEALTHCHECK_URL:=http://127.0.0.1:8001/health}"
+
+          ssh -i ~/.ssh/guara-vivo-ec2 "${EC2_USER}@${EC2_HOST}" \
+            "set -Eeuo pipefail; \
+            cd /opt/guara-vivo/guara-vivo-api; \
+            git fetch --prune origin main; \
+            git reset --hard origin/main; \
+            install -m 600 /tmp/guara-vivo.env /opt/guara-vivo/guara-vivo-api/.env.docker-compose; \
+            DEPLOY_HEALTHCHECK_URL='${DEPLOY_HEALTHCHECK_URL}' bash scripts/deploy-ec2.sh"
