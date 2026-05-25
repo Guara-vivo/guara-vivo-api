@@ -77,7 +77,7 @@ Ver migration atual:
 alembic current
 ```
 
-O head atual esperado é `20260517_0003`.
+O head atual esperado é `20260520_0008`.
 
 O app não cria tabelas automaticamente no startup. Toda alteração persistente de schema deve ser feita via Alembic.
 
@@ -109,14 +109,16 @@ http://localhost:8001/docs
 
 ## Usuário Admin Inicial
 
-No startup, se a tabela `users` estiver vazia, a API cria um usuário admin:
+No startup, se as variáveis `ADMIN_EMAIL` e `ADMIN_PASSWORD` forem configuradas e nenhum admin existir, a API cria um usuário admin automaticamente:
 
-```text
-email: admin@example.com
-senha: admin123
+```env
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=replace-with-secure-password
 ```
 
-A senha é armazenada como hash bcrypt.
+Se essas variáveis não forem definidas, nenhum admin é criado no startup. O primeiro usuário deve ser criado manualmente via SQL ou via API após uma migração manual.
+
+A senha é sempre armazenada como hash bcrypt, nunca em texto plano.
 
 ## Autenticação
 
@@ -131,7 +133,7 @@ Body:
 ```json
 {
   "email": "admin@example.com",
-  "password": "admin123"
+  "password": "your-configured-password"
 }
 ```
 
@@ -226,9 +228,14 @@ GET /records/?skip=0&limit=50
 - Login tem rate limit simples em memória: 5 tentativas por IP a cada 60 segundos.
 - CORS só é habilitado quando `CORS_ORIGINS` é configurado.
 - Requests `POST`, `PUT` e `PATCH` com body devem usar `Content-Type: application/json`.
-- Payloads acima de `MAX_REQUEST_BODY_BYTES` são rejeitados.
+- Payloads acima de `MAX_REQUEST_BODY_BYTES` (default 10MB) são rejeitados pelo middleware ASGI.
 - Rotas de escrita validam ownership antes de alterar dados relacionados.
 - `JWT_SECRET_KEY` é obrigatório para emitir e validar tokens.
+- Refresh tokens são single-use: validação, revogação e emissão ocorrem atomicamente com lock pessimista.
+- Upload de imagens é validado por assinatura binária (magic bytes), não apenas pelo header `Content-Type`.
+- Uploads suportam apenas JPEG, PNG e WebP.
+- Limite agregado de upload: 100MB por request.
+- Acesso a recursos de usuário não existentes ou não autorizados retorna `404` (não `403`), prevenindo enumeração.
 
 Observação: o rate limit atual é por processo e em memória. Antes de escalar horizontalmente, substitua por Redis ou outro storage compartilhado.
 
@@ -239,22 +246,30 @@ Observação: o rate limit atual é por processo e em memória. Antes de escalar
 - Índices atuais cobrem `users.email`, `records.user_id` e `ibis.analysis_id`.
 - Listagens têm paginação limitada.
 - Startup faz apenas seed mínimo do admin, sem criar dados de exemplo automaticamente.
+- Upload é processado sequencialmente por arquivo para reduzir pico de memória.
 
 ## Migrations Atuais
 
-Cadeia atual:
+Cadeia atual (head: `20260520_0008`):
 
 ```text
 20260516_0001 -> 20260517_0002 -> d3a87201af95 -> 269cbb5d99ef -> 20260517_0003
+    -> 20260517_0004 -> 20260517_0005 -> 20260518_0006 -> 20260518_0007
+    -> 20260520_0008
 ```
 
 Resumo:
 
 - `20260516_0001_initial_schema.py` cria schema inicial.
 - `20260517_0002_remove_analysis_unused_fields.py` remove campos não usados de `analyses`.
-- `d3a87201af95_add_status_column_to_records_table.py` adiciona `records.status`.
+- `d3a87201af95_add_status_column_to_records_table.py` adiciona `records.status` (idempotent).
 - `269cbb5d99ef_add_password_column_to_users_table.py` adiciona `users.password`.
 - `20260517_0003_add_security_performance_indexes.py` adiciona índices de segurança/performance.
+- `20260517_0004_fix_records_images_array_type.py` corrige `records.images` para `varchar[]`.
+- `20260517_0005_add_unique_constraint_to_analyses_recorder_id.py` adiciona constraint único em `analyses.recorder_id`.
+- `20260518_0006_make_datetimes_timezone_aware.py` converte datetime columns para timezone-aware (UTC).
+- `20260518_0007_add_refresh_tokens.py` cria tabela `refresh_tokens` para JWT rotation.
+- `20260520_0008_add_per_image_analysis.py` cria `analysis_images` e adiciona `ibis.analysis_image_id`.
 
 ## Testes E Verificação
 

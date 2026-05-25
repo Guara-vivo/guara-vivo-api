@@ -16,6 +16,7 @@ from rabbitmq import publish_record_for_inference
 from schemas import AnalysisImageRead, AnalysisRead, IbisRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
 from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
+from utils.file_validation import validate_image_file
 
 router = APIRouter(prefix="/records", tags=["records"])
 RECORDS_CACHE_TTL_SECONDS = int(os.getenv("RECORDS_CACHE_TTL_SECONDS", "30"))
@@ -202,7 +203,7 @@ async def read_record_detail(
 
     record, analysis = row
     if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        raise HTTPException(status_code=404, detail="Not found")
 
     ibis_items: list[Ibis] = []
     if analysis is not None:
@@ -247,6 +248,7 @@ async def create_record(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Ensure user_id matches authenticated user
     if record.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
@@ -267,17 +269,24 @@ async def create_record_with_upload(
     if not 1 <= len(images) <= 20:
         raise HTTPException(status_code=422, detail="images must contain between 1 and 20 files")
 
+    MAX_TOTAL_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB aggregate limit
     public_urls = []
+    total_size = 0
+    
     for image in images:
-        content_type = image.content_type or ""
-        if not content_type.lower().startswith("image/"):
-            raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is not an image")
-
         content = await image.read()
         if not content:
             raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is empty")
         if len(content) > MAX_UPLOAD_FILE_BYTES:
             raise HTTPException(status_code=413, detail=f"{image.filename or 'file'} is too large")
+        
+        # Check aggregate size limit
+        total_size += len(content)
+        if total_size > MAX_TOTAL_UPLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="Total upload size exceeds limit (100MB)")
+        
+        # Validate file by magic bytes
+        validate_image_file(image.filename or "file", content)
 
         try:
             public_urls.append(
@@ -285,11 +294,14 @@ async def create_record_with_upload(
                     user_id=current_user.id,
                     content=content,
                     filename=image.filename,
-                    content_type=content_type,
+                    content_type=image.content_type or "image/jpeg",
                 )
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Could not upload image to Supabase: {exc}") from exc
+        
+        # Explicitly release memory after each file
+        del content
 
     try:
         record = RecordCreate(
@@ -317,10 +329,10 @@ async def update_record(
     result = await db.execute(select(Record).where(Record.id == record_id))
     record = result.scalar_one_or_none()
 
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
 
-    if record.user_id != current_user.id or updated_record.user_id != current_user.id:
+    if updated_record.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     record.images = updated_record.images
@@ -345,12 +357,9 @@ async def delete_record(
     result = await db.execute(select(Record).where(Record.id == record_id))
     record = result.scalar_one_or_none()
 
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found")
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
 
-    if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    
     await db.delete(record)
     await db.commit()
     invalidate_records_cache(current_user.id)

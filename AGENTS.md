@@ -63,7 +63,7 @@ python src/main.py
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
 - Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007` -> `20260520_0008`.
 - `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
-- `d3a87201af95_add_status_column_to_records_table.py` adds `records.status`, backfills existing rows to `pending`, and makes it `NOT NULL`.
+- `d3a87201af95_add_status_column_to_records_table.py` adds `records.status` with idempotent logic to handle both initial schema creation and migration scenarios. Backfills existing rows to `pending` and makes the column `NOT NULL`.
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
 - `20260517_0003_add_security_performance_indexes.py` adds a unique index on `users.email` plus indexes on `records.user_id` and `ibis.analysis_id`.
 - `20260517_0004_fix_records_images_array_type.py` fixes existing databases where `records.images` was created as `varchar` instead of `varchar[]`.
@@ -90,8 +90,9 @@ python src/main.py
 
 ## Seed Data
 
-Startup seeds only the admin user when the users table is empty. This runs inside FastAPI's async lifespan handler.
-The admin seed uses `admin@example.com` / `admin123`, and the password must be stored as a bcrypt hash.
+Startup seeds the admin user only if `ADMIN_EMAIL` and `ADMIN_PASSWORD` environment variables are configured and the user does not already exist. This runs inside FastAPI's async lifespan handler. The password is always stored as a bcrypt hash, never in plain text.
+
+If `ADMIN_EMAIL` and `ADMIN_PASSWORD` are not configured, no admin is created at startup. The first user must be created manually via SQL or after manual setup.
 
 Optional sample data can be loaded manually:
 ```bash
@@ -119,12 +120,12 @@ python src/seed.py
 - `src/routes/user.py` owns password hashing, password verification, user creation/update, and login.
 - `src/security.py` owns JWT access-token creation, refresh-token management, and current-user validation.
 - Login returns a JWT access token with `token_type="bearer"`, a refresh token, and the authenticated `UserRead` payload.
-- Login has a simple in-memory per-process rate limit: 5 attempts per client IP per 60 seconds.
+- Login has a simple in-memory per-process rate limit: 5 attempts per client IP per 60 seconds. Cleanup and cardinality cap (10,000 IPs) prevent unbounded growth.
 - JWT access token payload includes `sub` as the user id, `email`, `type="access"`, `iat`, and `exp`.
 - JWT refresh token payload includes `sub` as the user id, `type="refresh"`, `jti` (unique token identifier), `iat`, and `exp`.
 - Access tokens currently expire after 1 hour by default (`JWT_ACCESS_TOKEN_EXPIRE=3600`).
-- Refresh tokens are long-lived and persisted in the `refresh_tokens` table for revocation support.
-- Refresh token rotation is implemented: when a refresh token is used to issue a new access token, the old refresh token is marked with `replaced_by_token_id`.
+- Refresh tokens are long-lived, single-use, and persisted in the `refresh_tokens` table for revocation support.
+- Refresh token rotation is atomic: validation, issuance, and revocation occur in the same transaction with pessimistic locking (`SELECT ... FOR UPDATE`) to prevent concurrent reuse.
 - `POST /users/refresh` endpoint validates refresh tokens and issues new access/refresh token pairs.
 - Refresh token revocation is tracked via `revoked_at` column and `replaced_by_token_id` linkage.
 - Protected endpoints should depend on `get_current_user` from `src/security.py`.
@@ -141,10 +142,11 @@ python src/seed.py
 - `DATABASE_URL` is required and must point to PostgreSQL.
 - In Docker, `DATABASE_URL` must point to Supabase or another external PostgreSQL database.
 - `JWT_SECRET_KEY` is required before issuing or validating JWTs. Generate it with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+- `ADMIN_EMAIL` and `ADMIN_PASSWORD` configure the startup admin seed. If set, the API creates an admin user on first startup if no user exists. Both must be provided together or both omitted.
 - `JWT_ACCESS_TOKEN_EXPIRE` is optional and defaults to `3600` seconds.
 - `CORS_ORIGINS` is optional and should be a comma-separated allowlist of frontend origins. If empty, CORS middleware is not enabled.
-- `MAX_REQUEST_BODY_BYTES` is optional and defaults to `10485760`.
-- `MAX_UPLOAD_FILE_BYTES` is optional and defaults to `5242880` bytes per uploaded image.
+- `MAX_REQUEST_BODY_BYTES` is optional and defaults to `10485760` (10MB). Enforced by ASGI middleware by reading the request stream.
+- `MAX_UPLOAD_FILE_BYTES` is optional and defaults to `5242880` (5MB) per uploaded image. Aggregate upload limit is 100MB per request.
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_STORAGE_BUCKET` configure API uploads to Supabase Storage. The default bucket is `frontend-uploads`.
 - `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE` tune SQLAlchemy async pool behavior.
 - `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, and `QUEUE_NAME` configure API queue publishing.
@@ -154,9 +156,12 @@ python src/seed.py
 
 ## Request Hardening
 
+- `src/middleware.py` enforces request body size limits by reading the ASGI stream, making it immune to Content-Length manipulation. Limit is set by `MAX_REQUEST_BODY_BYTES`.
+- `src/main.py` validates `Content-Type` header for `POST`, `PUT`, and `PATCH` requests: only `application/json` and `multipart/form-data` are allowed when body is present.
 - `src/main.py` configures CORS only when `CORS_ORIGINS` is non-empty; keep it as a comma-separated allowlist, never `*` with credentials.
-- `src/main.py` rejects oversized `POST`, `PUT`, and `PATCH` bodies using `MAX_REQUEST_BODY_BYTES`.
-- `src/main.py` accepts only JSON and multipart request bodies for `POST`, `PUT`, and `PATCH` when the body is non-empty.
+- Upload images are validated by file extension and magic bytes (binary signature), not just the `Content-Type` header. Only JPEG, PNG, and WebP are allowed.
+- Upload processing is sequential per file to reduce peak memory usage. Aggregate limit per request is 100MB.
+- Unauthorized access to resources returns `404` (not `403`) to prevent enumeration attacks.
 - Keep login rate limiting in `src/routes/user.py`; replace the in-memory limiter with Redis or another shared store before horizontal scaling.
 
 ## Models
@@ -211,6 +216,7 @@ python src/seed.py
 - Current performance indexes cover `users.email` (unique), `records.user_id`, and `ibis.analysis_id`.
 - Keep response payloads bounded with pagination.
 - Avoid expensive work during FastAPI lifespan startup beyond minimal seed.
+- Upload processing is sequential per file and releases memory explicitly after each file to prevent memory exhaustion on large batch uploads.
 
 ## Testing
 
@@ -221,11 +227,9 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 - PostgreSQL is mandatory; local SQLite fallback was removed.
 - PostgreSQL is hosted externally on Supabase for the Docker flow.
 - FastAPI startup uses `lifespan`; do not reintroduce deprecated `@app.on_event("startup")`.
-- Startup seeds admin user only; sample `Record`, `Analysis`, and `Ibis` rows are not created automatically.
+- Startup seeds admin user only if `ADMIN_EMAIL` and `ADMIN_PASSWORD` are configured; sample `Record`, `Analysis`, and `Ibis` rows are not created automatically.
 - `database.db` was removed and is ignored.
 - Local Docker Compose includes RabbitMQ but no database container.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
-- Production schema has been migrated to Alembic head `20260520_0008`: `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and rotation, and key lookup indexes exist.
-- **Password Security**: All passwords must be hashed using bcrypt before storage. Use `bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')` for hashing and `bcrypt.checkpw()` for verification. Never store plain text passwords.
-- **JWT Sessions**: Use JWT access tokens from `src/security.py` for post-login sessions. Tokens expire in 1 hour by default, require `JWT_SECRET_KEY`, and should be sent with `Authorization: Bearer <token>`.
+- Production schema has been migrated to Alembic head `20260520_0008`: `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and atomic rotation, and key lookup indexes exist.
 - **Plan Mode**: During planning phases, only generate plans and architecture. Do not output code blocks or file modifications. Wait for explicit implementation command before making any changes.
