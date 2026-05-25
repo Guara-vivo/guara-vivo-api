@@ -31,4 +31,4 @@ uvicorn==0.44.0
 alembic==1.16.5
 bcrypt==5.0.0
 python-jose[cryptography]==3.5.0
-python-magic-bin==0.4.14
+python-magic==0.4.27
