@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime
 
 import bcrypt
@@ -9,80 +10,26 @@ from database import AsyncSessionLocal
 
 async def seed_database():
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(User).limit(1))
+        # Check if admin should be created
+        admin_email = os.getenv("ADMIN_EMAIL")
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        
+        if not admin_email or not admin_password:
+            print("ADMIN_EMAIL and ADMIN_PASSWORD not set. Skipping admin seed.")
+            return
+        
+        # Check if admin already exists
+        result = await session.execute(select(User).where(User.email == admin_email.lower()))
         user = result.scalar_one_or_none()
 
         if user is None:
-            admin_password = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode("utf-8")
-            user = User(name="admin", email="admin@example.com", password=admin_password)
+            hashed_password = bcrypt.hashpw(admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            user = User(email=admin_email.lower(), password=hashed_password)
             session.add(user)
-            await session.flush()
-
-        record_1 = Record(
-            images=["https://supabase.co/storage/v1/object/public/images/guara1.png", "https://supabase.co/storage/v1/object/public/images/guara2.png"],
-            latitude_camera=-24.7088,
-            longitude_camera=-47.5582,
-            behavior=["vocalizando"],
-            date_time=datetime.now(),
-            user_id=user.id
-        )
-        session.add(record_1)
-        await session.flush()
-
-        analysis_1 = Analysis(
-            ibis_quantity=2,
-            datetime=datetime.now(),
-            recorder_id=record_1.id
-        )
-        session.add(analysis_1)
-        await session.flush()
-
-        ibis_1 = Ibis(color="vermelho", age_group="adulto", analysis_id=analysis_1.id)
-        ibis_2 = Ibis(color="cinza", age_group="juvenil", analysis_id=analysis_1.id)
-        session.add_all([ibis_1, ibis_2])
-
-        record_2 = Record(
-            images=["https://supabase.co/storage/v1/object/public/images/guara2.png"],
-            latitude_camera=-24.7100,
-            longitude_camera=-47.5600,
-            behavior=["alimentando-se"],
-            date_time=datetime.now(),
-            user_id=user.id
-        )
-        session.add(record_2)
-        await session.flush()
-
-        analysis_2 = Analysis(
-            ibis_quantity=1,
-            datetime=datetime.now(),
-            recorder_id=record_2.id
-        )
-        session.add(analysis_2)
-        await session.flush()
-
-        ibis_3 = Ibis(color="vermelho", age_group="adulto", analysis_id=analysis_2.id)
-        session.add(ibis_3)
-
-        record_3 = Record(
-            images=["https://supabase.co/storage/v1/object/public/images/vazio.png"],
-            latitude_camera=-24.7050,
-            longitude_camera=-47.5500,
-            behavior=[],
-            date_time=datetime.now(),
-            user_id=user.id
-        )
-        session.add(record_3)
-        await session.flush()
-
-        analysis_3 = Analysis(
-            ibis_quantity=0,
-            datetime=datetime.now(),
-            recorder_id=record_3.id
-        )
-        session.add(analysis_3)
-        
-        await session.commit()
-        print("Seed executado com sucesso!")
+            await session.commit()
+            print(f"Admin user {admin_email} created.")
+        else:
+            print(f"Admin user {admin_email} already exists.")
 
 if __name__ == "__main__":
     asyncio.run(seed_database())
