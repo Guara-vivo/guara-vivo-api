@@ -16,6 +16,7 @@ from rabbitmq import publish_record_for_inference
 from schemas import AnalysisImageRead, AnalysisRead, IbisRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
 from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
+from utils.file_validation import validate_image_file
 
 router = APIRouter(prefix="/records", tags=["records"])
 RECORDS_CACHE_TTL_SECONDS = int(os.getenv("RECORDS_CACHE_TTL_SECONDS", "30"))
@@ -269,15 +270,14 @@ async def create_record_with_upload(
 
     public_urls = []
     for image in images:
-        content_type = image.content_type or ""
-        if not content_type.lower().startswith("image/"):
-            raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is not an image")
-
         content = await image.read()
         if not content:
             raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is empty")
         if len(content) > MAX_UPLOAD_FILE_BYTES:
             raise HTTPException(status_code=413, detail=f"{image.filename or 'file'} is too large")
+        
+        # Validate file by magic bytes
+        validate_image_file(image.filename or "file", content)
 
         try:
             public_urls.append(
@@ -285,7 +285,7 @@ async def create_record_with_upload(
                     user_id=current_user.id,
                     content=content,
                     filename=image.filename,
-                    content_type=content_type,
+                    content_type=image.content_type or "image/jpeg",
                 )
             )
         except Exception as exc:
