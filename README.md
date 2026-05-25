@@ -228,9 +228,14 @@ GET /records/?skip=0&limit=50
 - Login tem rate limit simples em memória: 5 tentativas por IP a cada 60 segundos.
 - CORS só é habilitado quando `CORS_ORIGINS` é configurado.
 - Requests `POST`, `PUT` e `PATCH` com body devem usar `Content-Type: application/json`.
-- Payloads acima de `MAX_REQUEST_BODY_BYTES` são rejeitados.
+- Payloads acima de `MAX_REQUEST_BODY_BYTES` (default 10MB) são rejeitados pelo middleware ASGI.
 - Rotas de escrita validam ownership antes de alterar dados relacionados.
 - `JWT_SECRET_KEY` é obrigatório para emitir e validar tokens.
+- Refresh tokens são single-use: validação, revogação e emissão ocorrem atomicamente com lock pessimista.
+- Upload de imagens é validado por assinatura binária (magic bytes), não apenas pelo header `Content-Type`.
+- Uploads suportam apenas JPEG, PNG e WebP.
+- Limite agregado de upload: 100MB por request.
+- Acesso a recursos de usuário não existentes ou não autorizados retorna `404` (não `403`), prevenindo enumeração.
 
 Observação: o rate limit atual é por processo e em memória. Antes de escalar horizontalmente, substitua por Redis ou outro storage compartilhado.
 
@@ -241,22 +246,30 @@ Observação: o rate limit atual é por processo e em memória. Antes de escalar
 - Índices atuais cobrem `users.email`, `records.user_id` e `ibis.analysis_id`.
 - Listagens têm paginação limitada.
 - Startup faz apenas seed mínimo do admin, sem criar dados de exemplo automaticamente.
+- Upload é processado sequencialmente por arquivo para reduzir pico de memória.
 
 ## Migrations Atuais
 
-Cadeia atual:
+Cadeia atual (head: `20260520_0008`):
 
 ```text
 20260516_0001 -> 20260517_0002 -> d3a87201af95 -> 269cbb5d99ef -> 20260517_0003
+    -> 20260517_0004 -> 20260517_0005 -> 20260518_0006 -> 20260518_0007
+    -> 20260520_0008
 ```
 
 Resumo:
 
 - `20260516_0001_initial_schema.py` cria schema inicial.
 - `20260517_0002_remove_analysis_unused_fields.py` remove campos não usados de `analyses`.
-- `d3a87201af95_add_status_column_to_records_table.py` adiciona `records.status`.
+- `d3a87201af95_add_status_column_to_records_table.py` adiciona `records.status` (idempotent).
 - `269cbb5d99ef_add_password_column_to_users_table.py` adiciona `users.password`.
 - `20260517_0003_add_security_performance_indexes.py` adiciona índices de segurança/performance.
+- `20260517_0004_fix_records_images_array_type.py` corrige `records.images` para `varchar[]`.
+- `20260517_0005_add_unique_constraint_to_analyses_recorder_id.py` adiciona constraint único em `analyses.recorder_id`.
+- `20260518_0006_make_datetimes_timezone_aware.py` converte datetime columns para timezone-aware (UTC).
+- `20260518_0007_add_refresh_tokens.py` cria tabela `refresh_tokens` para JWT rotation.
+- `20260520_0008_add_per_image_analysis.py` cria `analysis_images` e adiciona `ibis.analysis_image_id`.
 
 ## Testes E Verificação
 
