@@ -80,6 +80,11 @@ async def validate_request_content_type(request: Request, call_next):
     return await call_next(request)
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 app.include_router(user.router)
 app.include_router(record.router)
 app.include_router(analysis.router)
