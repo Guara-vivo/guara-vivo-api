@@ -73,8 +73,11 @@ class MapZoneBase(SQLModel):
     user_id: int
 
 
-class MapZoneCreate(MapZoneBase):
-    pass
+class MapZoneCreate(SQLModel):
+    type: MapZoneType
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    radius_meters: int = Field(default=50, ge=10, le=5000)
 
 
 class MapZoneRead(MapZoneBase):
