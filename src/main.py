@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from routes import user, record, analysis, ibis
+from routes import user, record, analysis, ibis, map_zones
 from database import AsyncSessionLocal
 from models import User
 from middleware import BodyLimitMiddleware
@@ -89,6 +89,7 @@ app.include_router(user.router)
 app.include_router(record.router)
 app.include_router(analysis.router)
 app.include_router(ibis.router)
+app.include_router(map_zones.router)
 
 
 if __name__ == "__main__":
