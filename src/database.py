@@ -30,6 +30,7 @@ if not DATABASE_URL.startswith(("postgres://", "postgresql://", "postgresql+psyc
         "Please set DATABASE_URL to a PostgreSQL connection string (e.g., postgres://user:password@host:port/database)"
     )
 
+DEFAULT_DATABASE_URL = DATABASE_URL
 DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
 DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
 DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)

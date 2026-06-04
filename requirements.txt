@@ -27,7 +27,7 @@ starlette==1.0.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2026.2
-uvicorn==0.44.0
+uvicorn[standard]==0.44.0
 alembic==1.16.5
 bcrypt==5.0.0
 python-jose[cryptography]==3.5.0

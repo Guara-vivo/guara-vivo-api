@@ -98,6 +98,7 @@ class RecordBase(SQLModel):
     date_time: datetime
     user_id: int
     status: RecordStatus = "pending"
+    analysis_progress: int = Field(default=0, ge=0, le=100)
 
     @staticmethod
     def _normalize_string_list(value: Any) -> Any:
