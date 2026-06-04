@@ -62,6 +62,34 @@ class LogoutRequest(SQLModel):
     refresh_token: str = Field(min_length=1)
 
 
+MapZoneType = Literal["feeding", "nest"]
+
+
+class MapZoneBase(SQLModel):
+    type: MapZoneType
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    radius_meters: int = Field(default=50, ge=10, le=5000)
+    user_id: int
+
+
+class MapZoneCreate(SQLModel):
+    type: MapZoneType
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    radius_meters: int = Field(default=50, ge=10, le=5000)
+
+
+class MapZoneRead(MapZoneBase):
+    id: int
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def normalize_created_at(cls, value: datetime) -> datetime:
+        return normalize_timezone(value)
+
+
 class RecordBase(SQLModel):
     images: List[str] = Field(min_length=1, max_length=20)
     latitude_camera: float = Field(ge=-90, le=90)
@@ -70,6 +98,7 @@ class RecordBase(SQLModel):
     date_time: datetime
     user_id: int
     status: RecordStatus = "pending"
+    analysis_progress: int = Field(default=0, ge=0, le=100)
 
     @staticmethod
     def _normalize_string_list(value: Any) -> Any:
