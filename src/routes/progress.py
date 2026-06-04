@@ -12,6 +12,7 @@ from security import get_user_from_access_token
 
 router = APIRouter(prefix="/records/progress", tags=["record-progress"])
 NOTIFY_CHANNEL = "record_progress"
+HEARTBEAT_SECONDS = 25
 
 
 def serialize_progress_record(record: Record) -> dict[str, int | str]:
@@ -79,14 +80,22 @@ async def record_progress_websocket(websocket: WebSocket):
     try:
         while True:
             event_task = asyncio.create_task(queue.get())
-            done, _pending = await asyncio.wait(
-                {event_task, disconnect_task},
+            heartbeat_task = asyncio.create_task(asyncio.sleep(HEARTBEAT_SECONDS))
+            done, pending = await asyncio.wait(
+                {event_task, disconnect_task, heartbeat_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
+            for task in pending:
+                if task is not disconnect_task:
+                    task.cancel()
+
             if disconnect_task in done:
-                event_task.cancel()
                 raise WebSocketDisconnect
+
+            if heartbeat_task in done:
+                await websocket.send_json({"type": "heartbeat"})
+                continue
 
             event = event_task.result()
             await websocket.send_json(
