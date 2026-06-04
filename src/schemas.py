@@ -97,8 +97,6 @@ class RecordBase(SQLModel):
     behavior: List[BirdBehavior] = Field(min_length=1, max_length=20)
     date_time: datetime
     user_id: int
-    status: RecordStatus = "pending"
-    analysis_progress: int = Field(default=0, ge=0, le=100)
 
     @staticmethod
     def _normalize_string_list(value: Any) -> Any:
@@ -144,12 +142,14 @@ class RecordCreate(RecordBase):
 
 
 class RecordUpdate(RecordBase):
-    pass
+    status: RecordStatus = "pending"
 
 
 class RecordRead(RecordBase):
     images: List[str] = Field(max_length=20)
     behavior: List[BirdBehavior] = Field(max_length=20)
+    status: RecordStatus
+    analysis_progress: int = Field(ge=0, le=100)
     id: int
 
 

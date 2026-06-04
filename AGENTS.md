@@ -146,7 +146,7 @@ python src/seed.py
 - `JWT_ACCESS_TOKEN_EXPIRE` is optional and defaults to `3600` seconds.
 - `CORS_ORIGINS` is optional and should be a comma-separated allowlist of frontend origins. If empty, CORS middleware is not enabled.
 - `MAX_REQUEST_BODY_BYTES` is optional and defaults to `10485760` (10MB). Enforced by ASGI middleware by reading the request stream.
-- `MAX_UPLOAD_FILE_BYTES` is optional and defaults to `5242880` (5MB) per uploaded image. Aggregate upload limit is 100MB per request.
+- `MAX_UPLOAD_FILE_BYTES` is optional and defaults to `5242880` (5MB) per uploaded image. Aggregate upload limit is 10MB per request.
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_STORAGE_BUCKET` configure API uploads to Supabase Storage. The default bucket is `frontend-uploads`.
 - `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE` tune SQLAlchemy async pool behavior.
 - `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, and `QUEUE_NAME` configure API queue publishing.
@@ -160,7 +160,7 @@ python src/seed.py
 - `src/main.py` validates `Content-Type` header for `POST`, `PUT`, and `PATCH` requests: only `application/json` and `multipart/form-data` are allowed when body is present.
 - `src/main.py` configures CORS only when `CORS_ORIGINS` is non-empty; keep it as a comma-separated allowlist, never `*` with credentials.
 - Upload images are validated by file extension and magic bytes (binary signature), not just the `Content-Type` header. Only JPEG, PNG, and WebP are allowed.
-- Upload processing is sequential per file to reduce peak memory usage. Aggregate limit per request is 100MB.
+- Upload processing is sequential per file to reduce peak memory usage. Aggregate limit per request is 10MB.
 - Unauthorized access to resources returns `404` (not `403`) to prevent enumeration attacks.
 - Keep login rate limiting in `src/routes/user.py`; replace the in-memory limiter with Redis or another shared store before horizontal scaling.
 

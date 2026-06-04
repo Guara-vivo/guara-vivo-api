@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
+from middleware import MAX_REQUEST_BODY_BYTES
 from models import Analysis, AnalysisImage, Ibis, Record, User
 from rabbitmq import publish_record_for_inference
 from schemas import AnalysisImageRead, AnalysisRead, IbisRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
@@ -20,6 +21,8 @@ from utils.file_validation import validate_image_file
 
 router = APIRouter(prefix="/records", tags=["records"])
 RECORDS_CACHE_TTL_SECONDS = int(os.getenv("RECORDS_CACHE_TTL_SECONDS", "30"))
+RECORDS_CACHE_MAX_ENTRIES = int(os.getenv("RECORDS_CACHE_MAX_ENTRIES", "1000"))
+MAX_TOTAL_UPLOAD_SIZE = MAX_REQUEST_BODY_BYTES
 _records_cache: dict[str, tuple[float, str, Any]] = {}
 
 
@@ -61,11 +64,24 @@ def get_cached_payload(request: Request, response: Response, cache_key: str) -> 
 
 
 def set_cached_payload(response: Response, cache_key: str, payload: Any) -> Any:
+    prune_records_cache()
     etag = build_etag(payload)
     _records_cache[cache_key] = (time.monotonic(), etag, payload)
+    prune_records_cache()
     response.headers["Cache-Control"] = f"private, max-age={RECORDS_CACHE_TTL_SECONDS}"
     response.headers["ETag"] = etag
     return payload
+
+
+def prune_records_cache() -> None:
+    now = time.monotonic()
+    for cache_key, (timestamp, _etag, _payload) in list(_records_cache.items()):
+        if now - timestamp > RECORDS_CACHE_TTL_SECONDS:
+            _records_cache.pop(cache_key, None)
+
+    while len(_records_cache) > RECORDS_CACHE_MAX_ENTRIES:
+        oldest_key = min(_records_cache, key=lambda key: _records_cache[key][0])
+        _records_cache.pop(oldest_key, None)
 
 
 def invalidate_records_cache(user_id: int) -> None:
@@ -238,7 +254,7 @@ async def read_record(
         raise HTTPException(status_code=404, detail="Record not found")
 
     if record.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        raise HTTPException(status_code=404, detail="Not found")
     
     return record
 
@@ -252,7 +268,10 @@ async def create_record(
     if record.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
-    db_record = Record(**record.model_dump())
+    record_data = record.model_dump()
+    record_data["status"] = "pending"
+    record_data["analysis_progress"] = 0
+    db_record = Record(**record_data)
     return await commit_record_and_publish(db, db_record)
 
 
@@ -269,7 +288,6 @@ async def create_record_with_upload(
     if not 1 <= len(images) <= 20:
         raise HTTPException(status_code=422, detail="images must contain between 1 and 20 files")
 
-    MAX_TOTAL_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB aggregate limit
     public_urls = []
     total_size = 0
     
@@ -283,7 +301,7 @@ async def create_record_with_upload(
         # Check aggregate size limit
         total_size += len(content)
         if total_size > MAX_TOTAL_UPLOAD_SIZE:
-            raise HTTPException(status_code=413, detail="Total upload size exceeds limit (100MB)")
+            raise HTTPException(status_code=413, detail="Total upload size exceeds limit (10MB)")
         
         # Validate file by magic bytes
         validate_image_file(image.filename or "file", content)
@@ -311,12 +329,14 @@ async def create_record_with_upload(
             behavior=parse_behavior_form_values(behavior),
             date_time=date_time,
             user_id=current_user.id,
-            status="pending",
         )
     except (ValidationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    db_record = Record(**record.model_dump())
+    record_data = record.model_dump()
+    record_data["status"] = "pending"
+    record_data["analysis_progress"] = 0
+    db_record = Record(**record_data)
     return await commit_record_and_publish(db, db_record)
 
 @router.put("/{record_id}", response_model=RecordRead)

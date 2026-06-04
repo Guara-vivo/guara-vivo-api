@@ -234,7 +234,7 @@ GET /records/?skip=0&limit=50
 - Refresh tokens são single-use: validação, revogação e emissão ocorrem atomicamente com lock pessimista.
 - Upload de imagens é validado por assinatura binária (magic bytes), não apenas pelo header `Content-Type`.
 - Uploads suportam apenas JPEG, PNG e WebP.
-- Limite agregado de upload: 100MB por request.
+- Limite agregado de upload: 10MB por request.
 - Acesso a recursos de usuário não existentes ou não autorizados retorna `404` (não `403`), prevenindo enumeração.
 
 Observação: o rate limit atual é por processo e em memória. Antes de escalar horizontalmente, substitua por Redis ou outro storage compartilhado.

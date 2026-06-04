@@ -63,7 +63,7 @@ async def delete_map_zone(
         raise HTTPException(status_code=404, detail="Zone not found")
 
     if zone.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        raise HTTPException(status_code=404, detail="Zone not found")
 
     await db.delete(zone)
     await db.commit()
