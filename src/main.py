@@ -38,7 +38,10 @@ async def lifespan(app: FastAPI):
                 db.add(admin_user)
                 await db.commit()
 
-    yield
+    try:
+        yield
+    finally:
+        await progress.close_progress_manager()
 
 
 app = FastAPI(lifespan=lifespan)
