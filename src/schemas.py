@@ -67,6 +67,8 @@ MapZoneType = Literal["feeding", "nest"]
 
 class MapZoneBase(SQLModel):
     type: MapZoneType
+    name: str = Field(min_length=1, max_length=80)
+    sequence_index: int = Field(ge=0)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     radius_meters: int = Field(default=50, ge=10, le=5000)
@@ -88,6 +90,12 @@ class MapZoneRead(MapZoneBase):
     @classmethod
     def normalize_created_at(cls, value: datetime) -> datetime:
         return normalize_timezone(value)
+
+
+class LinkedMapZoneRead(SQLModel):
+    id: int
+    type: MapZoneType
+    name: str
 
 
 class RecordBase(SQLModel):
@@ -151,6 +159,7 @@ class RecordRead(RecordBase):
     status: RecordStatus
     analysis_progress: int = Field(ge=0, le=100)
     id: int
+    map_zones: List[LinkedMapZoneRead] = Field(default_factory=list)
 
 
 class RecordSummaryRead(RecordRead):

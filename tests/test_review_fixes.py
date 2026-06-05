@@ -114,3 +114,66 @@ class ReviewFixTests(unittest.TestCase):
             asyncio.run(read_record(123, db=DB(), current_user=SimpleNamespace(id=1)))
 
         self.assertEqual(exc_info.exception.status_code, 404)
+
+    def test_zone_suffix_continues_after_alphabet(self):
+        from services.map_zone_service import index_to_zone_suffix
+
+        self.assertEqual(index_to_zone_suffix(0), "A")
+        self.assertEqual(index_to_zone_suffix(25), "Z")
+        self.assertEqual(index_to_zone_suffix(26), "AA")
+        self.assertEqual(index_to_zone_suffix(27), "AB")
+
+    def test_zone_name_uses_type_label(self):
+        from services.map_zone_service import format_zone_name
+
+        self.assertEqual(format_zone_name("feeding", 0), "Alimentação A")
+        self.assertEqual(format_zone_name("nest", 26), "Ninho AA")
+
+    def test_smallest_free_sequence_index_reuses_deleted_name(self):
+        from services.map_zone_service import find_smallest_free_sequence_index
+
+        self.assertEqual(find_smallest_free_sequence_index([0, 2, 3]), 1)
+        self.assertEqual(find_smallest_free_sequence_index([0, 1, 2]), 3)
+
+    def test_zones_overlap_only_when_distance_is_smaller_than_radius_sum(self):
+        from services.map_zone_service import zones_overlap
+
+        self.assertTrue(zones_overlap(0, 0, 100, 0, 0.001, 100))
+        self.assertFalse(zones_overlap(0, 0, 50, 0, 0.001, 50))
+
+    def test_point_inside_zone_uses_radius(self):
+        from services.map_zone_service import point_inside_zone
+
+        self.assertTrue(point_inside_zone(0, 0.0005, 0, 0, 100))
+        self.assertFalse(point_inside_zone(0, 0.002, 0, 0, 100))
+
+    def test_record_summary_serializes_linked_map_zones(self):
+        from models import MapZone, Record
+        from routes.record import serialize_record_summary
+
+        record = Record(
+            id=123,
+            user_id=1,
+            images=["https://example.com/a.jpg"],
+            latitude_camera=0,
+            longitude_camera=0,
+            behavior=["voando"],
+            date_time="2026-06-04T12:00:00Z",
+            status="pending",
+            analysis_progress=0,
+        )
+        zone = MapZone(
+            id=7,
+            type="feeding",
+            name="Alimentação A",
+            sequence_index=0,
+            latitude=0,
+            longitude=0,
+            radius_meters=100,
+            user_id=1,
+            created_at="2026-06-04T12:00:00Z",
+        )
+
+        payload = serialize_record_summary(record, None, [zone])
+
+        self.assertEqual(payload["map_zones"], [{"id": 7, "type": "feeding", "name": "Alimentação A"}])

@@ -5,3 +5,4 @@ from .analysis_image import AnalysisImage
 from .ibis import Ibis
 from .refresh_token import RefreshToken
 from .map_zone import MapZone
+from .record_map_zone import RecordMapZone

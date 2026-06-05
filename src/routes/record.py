@@ -12,10 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from middleware import MAX_REQUEST_BODY_BYTES
-from models import Analysis, AnalysisImage, Ibis, Record, User
+from models import Analysis, AnalysisImage, Ibis, MapZone, Record, RecordMapZone, User
 from rabbitmq import publish_record_for_inference
-from schemas import AnalysisImageRead, AnalysisRead, IbisRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
+from schemas import AnalysisImageRead, AnalysisRead, IbisRead, LinkedMapZoneRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
+from services.map_zone_service import point_inside_zone
 from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
 from utils.file_validation import validate_image_file
 
@@ -91,6 +92,10 @@ def invalidate_records_cache(user_id: int) -> None:
             _records_cache.pop(cache_key, None)
 
 
+def invalidate_all_records_cache() -> None:
+    _records_cache.clear()
+
+
 def parse_behavior_form_values(values: list[str]) -> list[str]:
     if len(values) == 1:
         value = values[0].strip()
@@ -104,8 +109,30 @@ def parse_behavior_form_values(values: list[str]) -> list[str]:
     return values
 
 
+async def link_record_to_containing_zones(db: AsyncSession, db_record: Record) -> None:
+    zones_result = await db.execute(select(MapZone).order_by(MapZone.type, MapZone.sequence_index))
+    linked_types: set[str] = set()
+
+    for zone in zones_result.scalars().all():
+        if zone.type in linked_types:
+            continue
+        if not point_inside_zone(
+            db_record.latitude_camera,
+            db_record.longitude_camera,
+            zone.latitude,
+            zone.longitude,
+            zone.radius_meters,
+        ):
+            continue
+
+        db.add(RecordMapZone(record_id=db_record.id, map_zone_id=zone.id))
+        linked_types.add(zone.type)
+
+
 async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Record:
     db.add(db_record)
+    await db.flush()
+    await link_record_to_containing_zones(db, db_record)
     await db.commit()
     await db.refresh(db_record)
 
@@ -124,8 +151,46 @@ async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Reco
     return db_record
 
 
-def serialize_record_summary(record: Record, analysis: Analysis | None) -> dict[str, Any]:
+def serialize_linked_map_zones(zones: list[MapZone]) -> list[dict[str, Any]]:
+    return [
+        LinkedMapZoneRead.model_validate(zone).model_dump(mode="json")
+        for zone in zones
+    ]
+
+
+def serialize_record_read(record: Record, map_zones: list[MapZone] | None = None) -> dict[str, Any]:
     payload = RecordRead.model_validate(record).model_dump(mode="json")
+    payload["map_zones"] = serialize_linked_map_zones(map_zones or [])
+    return payload
+
+
+async def load_record_map_zones(
+    db: AsyncSession,
+    record_ids: list[int],
+) -> dict[int, list[MapZone]]:
+    if not record_ids:
+        return {}
+
+    result = await db.execute(
+        select(RecordMapZone.record_id, MapZone)
+        .join(MapZone, MapZone.id == RecordMapZone.map_zone_id)
+        .where(RecordMapZone.record_id.in_(record_ids))
+        .order_by(RecordMapZone.record_id, MapZone.type, MapZone.sequence_index)
+    )
+    zones_by_record: dict[int, list[MapZone]] = {record_id: [] for record_id in record_ids}
+
+    for record_id, zone in result.all():
+        zones_by_record.setdefault(record_id, []).append(zone)
+
+    return zones_by_record
+
+
+def serialize_record_summary(
+    record: Record,
+    analysis: Analysis | None,
+    map_zones: list[MapZone] | None = None,
+) -> dict[str, Any]:
+    payload = serialize_record_read(record, map_zones)
     payload["analysis_id"] = analysis.id if analysis else None
     payload["ibis_quantity"] = analysis.ibis_quantity if analysis else None
     return payload
@@ -136,8 +201,9 @@ def serialize_record_detail(
     analysis: Analysis | None,
     ibis_items: list[Ibis],
     image_analyses: list[AnalysisImage],
+    map_zones: list[MapZone] | None = None,
 ) -> dict[str, Any]:
-    payload = RecordRead.model_validate(record).model_dump(mode="json")
+    payload = serialize_record_read(record, map_zones)
     payload["analysis"] = (
         AnalysisRead.model_validate(analysis).model_dump(mode="json")
         if analysis
@@ -165,7 +231,12 @@ async def read_records(
         .offset(skip)
         .limit(limit)
     )
-    return result.scalars().all()
+    records = list(result.scalars().all())
+    zones_by_record = await load_record_map_zones(db, [record.id for record in records])
+    return [
+        serialize_record_read(record, zones_by_record.get(record.id, []))
+        for record in records
+    ]
 
 
 @router.get("/summary", response_model=list[RecordSummaryRead])
@@ -190,7 +261,12 @@ async def read_record_summaries(
         .offset(skip)
         .limit(limit)
     )
-    payload = [serialize_record_summary(record, analysis) for record, analysis in result.all()]
+    rows = result.all()
+    zones_by_record = await load_record_map_zones(db, [record.id for record, _analysis in rows])
+    payload = [
+        serialize_record_summary(record, analysis, zones_by_record.get(record.id, []))
+        for record, analysis in rows
+    ]
     return set_cached_payload(response, cache_key, payload)
 
 
@@ -238,7 +314,14 @@ async def read_record_detail(
     )
     image_analyses = list(image_analyses_result.scalars().all())
 
-    payload = serialize_record_detail(record, analysis, ibis_items, image_analyses)
+    zones_by_record = await load_record_map_zones(db, [record.id])
+    payload = serialize_record_detail(
+        record,
+        analysis,
+        ibis_items,
+        image_analyses,
+        zones_by_record.get(record.id, []),
+    )
     return set_cached_payload(response, cache_key, payload)
 
 @router.get("/{record_id}", response_model=RecordRead)
@@ -256,7 +339,8 @@ async def read_record(
     if record.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Not found")
     
-    return record
+    zones_by_record = await load_record_map_zones(db, [record.id])
+    return serialize_record_read(record, zones_by_record.get(record.id, []))
 
 @router.post("/", response_model=RecordRead)
 async def create_record(
@@ -272,7 +356,9 @@ async def create_record(
     record_data["status"] = "pending"
     record_data["analysis_progress"] = 0
     db_record = Record(**record_data)
-    return await commit_record_and_publish(db, db_record)
+    created_record = await commit_record_and_publish(db, db_record)
+    zones_by_record = await load_record_map_zones(db, [created_record.id])
+    return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
 
 
 @router.post("/upload", response_model=RecordRead)
@@ -337,7 +423,9 @@ async def create_record_with_upload(
     record_data["status"] = "pending"
     record_data["analysis_progress"] = 0
     db_record = Record(**record_data)
-    return await commit_record_and_publish(db, db_record)
+    created_record = await commit_record_and_publish(db, db_record)
+    zones_by_record = await load_record_map_zones(db, [created_record.id])
+    return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
 
 @router.put("/{record_id}", response_model=RecordRead)
 async def update_record(
