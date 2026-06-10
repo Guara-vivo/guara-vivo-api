@@ -177,3 +177,65 @@ class ReviewFixTests(unittest.TestCase):
         payload = serialize_record_summary(record, None, [zone])
 
         self.assertEqual(payload["map_zones"], [{"id": 7, "type": "feeding", "name": "Alimentação A"}])
+
+    def test_map_zone_record_serializes_author_name(self):
+        from models import MapZone, Record
+        from routes.map_zones import serialize_map_zone_record
+
+        record = Record(
+            id=123,
+            user_id=1,
+            images=["https://example.com/a.jpg"],
+            latitude_camera=0,
+            longitude_camera=0,
+            behavior=["voando"],
+            date_time="2026-06-04T12:00:00Z",
+            status="completed",
+            analysis_progress=100,
+        )
+        zone = MapZone(
+            id=7,
+            type="feeding",
+            name="Alimentação A",
+            sequence_index=0,
+            latitude=0,
+            longitude=0,
+            radius_meters=100,
+            user_id=1,
+            created_at="2026-06-04T12:00:00Z",
+        )
+
+        payload = serialize_map_zone_record(
+            record,
+            SimpleNamespace(id=9, ibis_quantity=4),
+            [zone],
+            SimpleNamespace(name="Ana Silva", email="ana@example.com"),
+        )
+
+        self.assertEqual(payload["id"], 123)
+        self.assertEqual(payload["ibis_quantity"], 4)
+        self.assertEqual(payload["author_name"], "Ana Silva")
+        self.assertNotIn("email", payload)
+
+    def test_map_zone_record_visibility_requires_completed_status_and_guaras(self):
+        from models import Record
+        from routes.map_zones import is_visible_map_zone_record
+
+        base_record = Record(
+            id=123,
+            user_id=1,
+            images=["https://example.com/a.jpg"],
+            latitude_camera=0,
+            longitude_camera=0,
+            behavior=["voando"],
+            date_time="2026-06-04T12:00:00Z",
+            status="completed",
+            analysis_progress=100,
+        )
+
+        self.assertTrue(is_visible_map_zone_record(base_record, SimpleNamespace(ibis_quantity=1)))
+
+        failed_record = Record(**{**base_record.model_dump(), "status": "failed"})
+        self.assertFalse(is_visible_map_zone_record(failed_record, SimpleNamespace(ibis_quantity=1)))
+        self.assertFalse(is_visible_map_zone_record(base_record, SimpleNamespace(ibis_quantity=0)))
+        self.assertFalse(is_visible_map_zone_record(base_record, None))
