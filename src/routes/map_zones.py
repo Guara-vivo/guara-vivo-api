@@ -4,8 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import MapZone, User
-from schemas import MapZoneCreate, MapZoneRead
+from models import Analysis, MapZone, Record, RecordMapZone, User
+from schemas import MapZoneCreate, MapZoneRead, MapZoneRecordRead
 from security import get_current_user
 from services.map_zone_service import (
     find_smallest_free_sequence_index,
@@ -14,6 +14,23 @@ from services.map_zone_service import (
 )
 
 router = APIRouter(prefix="/map-zones", tags=["map-zones"])
+
+
+def serialize_map_zone_record(
+    record: Record,
+    analysis: Analysis | None,
+    map_zones: list[MapZone],
+    author: User,
+) -> dict:
+    from routes.record import serialize_record_summary
+
+    payload = serialize_record_summary(record, analysis, map_zones)
+    payload["author_name"] = author.name
+    return payload
+
+
+def is_visible_map_zone_record(record: Record, analysis: Analysis | None) -> bool:
+    return record.status == "completed" and analysis is not None and analysis.ibis_quantity > 0
 
 
 @router.get("/", response_model=list[MapZoneRead])
@@ -31,6 +48,47 @@ async def read_map_zones(
         .limit(limit)
     )
     return result.scalars().all()
+
+
+@router.get("/{zone_id}/records", response_model=list[MapZoneRecordRead])
+async def read_map_zone_records(
+    zone_id: int,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get records linked to a public map zone."""
+    zone_result = await db.execute(select(MapZone).where(MapZone.id == zone_id))
+    zone = zone_result.scalar_one_or_none()
+
+    if zone is None:
+        raise HTTPException(status_code=404, detail="Zone not found")
+
+    records_result = await db.execute(
+        select(Record, Analysis, User)
+        .join(RecordMapZone, RecordMapZone.record_id == Record.id)
+        .join(User, User.id == Record.user_id)
+        .join(Analysis, Analysis.recorder_id == Record.id)
+        .where(
+            RecordMapZone.map_zone_id == zone_id,
+            Record.status == "completed",
+            Analysis.ibis_quantity > 0,
+        )
+        .order_by(Record.date_time.desc(), Record.id.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    rows = records_result.all()
+
+    from routes.record import load_record_map_zones
+
+    zones_by_record = await load_record_map_zones(db, [record.id for record, _analysis, _author in rows])
+    return [
+        serialize_map_zone_record(record, analysis, zones_by_record.get(record.id, []), author)
+        for record, analysis, author in rows
+        if is_visible_map_zone_record(record, analysis)
+    ]
 
 
 @router.post("/", response_model=MapZoneRead)

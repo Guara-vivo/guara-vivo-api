@@ -167,6 +167,10 @@ class RecordSummaryRead(RecordRead):
     ibis_quantity: Optional[int] = None
 
 
+class MapZoneRecordRead(RecordSummaryRead):
+    author_name: str
+
+
 class AnalysisBase(SQLModel):
     ibis_quantity: int = Field(ge=0, le=100000)
     datetime: datetime
