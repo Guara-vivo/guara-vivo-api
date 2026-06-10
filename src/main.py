@@ -19,6 +19,13 @@ def get_cors_origins() -> list[str]:
     return [origin.strip() for origin in origins.split(",") if origin.strip()]
 
 
+def get_fastapi_docs_config() -> dict[str, str | None]:
+    if os.getenv("APP_ENV", "").lower() == "production":
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+    return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
@@ -44,7 +51,7 @@ async def lifespan(app: FastAPI):
         await progress.close_progress_manager()
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, **get_fastapi_docs_config())
 
 # Add body limit middleware first (processes request stream)
 app.add_middleware(BodyLimitMiddleware)

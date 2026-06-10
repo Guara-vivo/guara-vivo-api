@@ -22,6 +22,25 @@ sys.modules.setdefault("magic", magic_stub)
 
 
 class ReviewFixTests(unittest.TestCase):
+    def test_openapi_docs_are_disabled_in_production(self):
+        from main import get_fastapi_docs_config
+
+        previous_app_env = os.environ.get("APP_ENV")
+        os.environ["APP_ENV"] = "production"
+
+        try:
+            config = get_fastapi_docs_config()
+        finally:
+            if previous_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = previous_app_env
+
+        self.assertEqual(
+            config,
+            {"docs_url": None, "redoc_url": None, "openapi_url": None},
+        )
+
     def test_record_create_does_not_accept_client_progress(self):
         from schemas import RecordCreate
 
