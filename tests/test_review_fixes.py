@@ -147,6 +147,40 @@ class ReviewFixTests(unittest.TestCase):
         self.assertTrue(point_inside_zone(0, 0.0005, 0, 0, 100))
         self.assertFalse(point_inside_zone(0, 0.002, 0, 0, 100))
 
+    def test_new_zone_links_existing_record_inside_radius(self):
+        from services.map_zone_service import should_link_record_to_new_zone
+
+        record = SimpleNamespace(latitude_camera=0, longitude_camera=0.0005)
+        zone = SimpleNamespace(type="feeding", latitude=0, longitude=0, radius_meters=100)
+
+        self.assertTrue(should_link_record_to_new_zone(record, zone, []))
+
+    def test_new_zone_skips_record_outside_radius(self):
+        from services.map_zone_service import should_link_record_to_new_zone
+
+        record = SimpleNamespace(latitude_camera=0, longitude_camera=0.002)
+        zone = SimpleNamespace(type="feeding", latitude=0, longitude=0, radius_meters=100)
+
+        self.assertFalse(should_link_record_to_new_zone(record, zone, []))
+
+    def test_new_zone_skips_record_already_linked_to_same_type(self):
+        from services.map_zone_service import should_link_record_to_new_zone
+
+        record = SimpleNamespace(latitude_camera=0, longitude_camera=0.0005)
+        zone = SimpleNamespace(type="feeding", latitude=0, longitude=0, radius_meters=100)
+        existing_zone = SimpleNamespace(type="feeding")
+
+        self.assertFalse(should_link_record_to_new_zone(record, zone, [existing_zone]))
+
+    def test_new_zone_allows_record_linked_to_different_type(self):
+        from services.map_zone_service import should_link_record_to_new_zone
+
+        record = SimpleNamespace(latitude_camera=0, longitude_camera=0.0005)
+        zone = SimpleNamespace(type="feeding", latitude=0, longitude=0, radius_meters=100)
+        existing_zone = SimpleNamespace(type="nest")
+
+        self.assertTrue(should_link_record_to_new_zone(record, zone, [existing_zone]))
+
     def test_record_summary_serializes_linked_map_zones(self):
         from models import MapZone, Record
         from routes.record import serialize_record_summary
