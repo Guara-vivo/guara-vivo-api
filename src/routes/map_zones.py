@@ -10,6 +10,7 @@ from security import get_current_user
 from services.map_zone_service import (
     find_smallest_free_sequence_index,
     format_zone_name,
+    should_link_record_to_new_zone,
     zones_overlap,
 )
 
@@ -129,8 +130,25 @@ async def create_map_zone(
         created_at=datetime.now(timezone.utc),
     )
     db.add(db_zone)
+    await db.flush()
+
+    records_result = await db.execute(select(Record).order_by(Record.id))
+    records = list(records_result.scalars().all())
+
+    if records:
+        from routes.record import load_record_map_zones
+
+        zones_by_record = await load_record_map_zones(db, [record.id for record in records])
+        for record in records:
+            if should_link_record_to_new_zone(record, db_zone, zones_by_record.get(record.id, [])):
+                db.add(RecordMapZone(record_id=record.id, map_zone_id=db_zone.id))
+
     await db.commit()
     await db.refresh(db_zone)
+
+    from routes.record import invalidate_all_records_cache
+
+    invalidate_all_records_cache()
     return db_zone
 
 

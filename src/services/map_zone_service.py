@@ -70,3 +70,16 @@ def point_inside_zone(
     radius_meters: int,
 ) -> bool:
     return distance_meters(point_lat, point_lng, zone_lat, zone_lng) <= radius_meters
+
+
+def should_link_record_to_new_zone(record, zone, existing_zones: list) -> bool:
+    if any(existing_zone.type == zone.type for existing_zone in existing_zones):
+        return False
+
+    return point_inside_zone(
+        record.latitude_camera,
+        record.longitude_camera,
+        zone.latitude,
+        zone.longitude,
+        zone.radius_meters,
+    )
