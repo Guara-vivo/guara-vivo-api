@@ -6,3 +6,5 @@ from .ibis import Ibis
 from .refresh_token import RefreshToken
 from .map_zone import MapZone
 from .record_map_zone import RecordMapZone
+from .sync_queue import SyncQueueItem
+from .id_mapping import IdMapping

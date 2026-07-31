@@ -6,12 +6,17 @@ import bcrypt
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from routes import user, record, analysis, ibis, map_zones, progress
-from database import AsyncSessionLocal
+from database import OFFLINE_MODE, AsyncSessionLocal
 from models import User
 from middleware import BodyLimitMiddleware
+
+if OFFLINE_MODE:
+    from fastapi import WebSocket, WebSocketDisconnect as _  # noqa
+    from sync import sync_routes, sync_ws, sync_background
 
 
 def get_cors_origins() -> list[str]:
@@ -28,27 +33,39 @@ def get_fastapi_docs_config() -> dict[str, str | None]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with AsyncSessionLocal() as db:
-        # Admin seed only if ADMIN_EMAIL and ADMIN_PASSWORD are provided
-        admin_email = os.getenv("ADMIN_EMAIL")
-        admin_password = os.getenv("ADMIN_PASSWORD")
-        
-        if admin_email and admin_password:
-            # Check if admin already exists
-            result = await db.execute(select(User).where(User.email == admin_email.lower()))
-            admin_user = result.scalar_one_or_none()
+    local_storage_path = os.getenv("LOCAL_STORAGE_PATH", "./data/storage")
+
+    if OFFLINE_MODE:
+        from database_local import init_local_db
+        from models_local import RecordLocal, UserLocal  # noqa - ensure tables registered
+        await init_local_db()
+
+        if not os.path.exists(local_storage_path):
+            os.makedirs(local_storage_path, exist_ok=True)
+
+        await sync_background.start()
+    else:
+        async with AsyncSessionLocal() as db:
+            admin_email = os.getenv("ADMIN_EMAIL")
+            admin_password = os.getenv("ADMIN_PASSWORD")
             
-            if admin_user is None:
-                # Create admin with provided credentials
-                hashed_password = bcrypt.hashpw(admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                admin_user = User(email=admin_email.lower(), password=hashed_password)
-                db.add(admin_user)
-                await db.commit()
+            if admin_email and admin_password:
+                result = await db.execute(select(User).where(User.email == admin_email.lower()))
+                admin_user = result.scalar_one_or_none()
+                
+                if admin_user is None:
+                    hashed_password = bcrypt.hashpw(admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                    admin_user = User(email=admin_email.lower(), password=hashed_password)
+                    db.add(admin_user)
+                    await db.commit()
 
     try:
         yield
     finally:
-        await progress.close_progress_manager()
+        if OFFLINE_MODE:
+            await sync_background.stop()
+        else:
+            await progress.close_progress_manager()
 
 
 app = FastAPI(lifespan=lifespan, **get_fastapi_docs_config())
@@ -100,7 +117,15 @@ app.include_router(record.router)
 app.include_router(analysis.router)
 app.include_router(ibis.router)
 app.include_router(map_zones.router)
-app.include_router(progress.router)
+
+if OFFLINE_MODE:
+    local_storage_path = os.getenv("LOCAL_STORAGE_PATH", "./data/storage")
+    if os.path.exists(local_storage_path):
+        app.mount("/local-storage", StaticFiles(directory=local_storage_path), name="local_storage")
+    app.include_router(sync_routes.router)
+    app.include_router(sync_ws.router)
+else:
+    app.include_router(progress.router)
 
 
 if __name__ == "__main__":

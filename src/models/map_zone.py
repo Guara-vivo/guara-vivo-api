@@ -10,6 +10,7 @@ class MapZone(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint("type", "name", name="uq_map_zones_type_name"),
         UniqueConstraint("type", "sequence_index", name="uq_map_zones_type_sequence_index"),
+        {"extend_existing": True},
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)

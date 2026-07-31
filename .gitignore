@@ -165,4 +165,9 @@ __pypackages__/
 # Git worktrees
 .worktrees/
 
+data/
+*.sqlite
+*.sqlite3
+.auth_tokens
+
 # End of file

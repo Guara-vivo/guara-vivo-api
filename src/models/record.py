@@ -20,6 +20,7 @@ class Record(SQLModel, table=True):
             "analysis_progress >= 0 AND analysis_progress <= 100",
             name="ck_records_analysis_progress",
         ),
+        {"extend_existing": True},
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)

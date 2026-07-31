@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 class AnalysisImage(SQLModel, table=True):
     __tablename__ = "analysis_images"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     analysis_id: int = Field(foreign_key="analyses.id", index=True)

@@ -160,6 +160,9 @@ class RecordRead(RecordBase):
     analysis_progress: int = Field(ge=0, le=100)
     id: int
     map_zones: List[LinkedMapZoneRead] = Field(default_factory=list)
+    synced: bool = True
+    sync_status: Optional[str] = None
+    remote_id: Optional[int] = None
 
 
 class RecordSummaryRead(RecordRead):
@@ -241,3 +244,41 @@ class RecordDetailRead(RecordRead):
     analysis: Optional[AnalysisRead] = None
     ibis: List[IbisRead] = Field(default_factory=list)
     image_analyses: List[AnalysisImageRead] = Field(default_factory=list)
+
+
+# === Offline / Sync Schemas ===
+
+class OfflineStatus(SQLModel):
+    offline_mode: bool
+    remote_connected: bool
+    pending_sync: int
+    syncing: bool
+    last_sync_at: Optional[datetime] = None
+    last_sync_error: Optional[str] = None
+
+
+class SyncHistoryItem(SQLModel):
+    id: int
+    operation: str
+    local_record_id: int
+    remote_record_id: Optional[int] = None
+    status: str
+    error: Optional[str] = None
+    created_at: datetime
+    synced_at: Optional[datetime] = None
+
+
+class SyncHistoryResponse(SQLModel):
+    items: List[SyncHistoryItem]
+    total: int
+
+
+class OfflineConfigureRequest(SQLModel):
+    api_base_url: str = Field(min_length=1)
+    email: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class OfflineConfigureResponse(SQLModel):
+    status: str
+    expires_at: datetime

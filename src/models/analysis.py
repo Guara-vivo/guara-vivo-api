@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 class Analysis(SQLModel, table=True):
     __tablename__ = "analyses"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     ibis_quantity: int

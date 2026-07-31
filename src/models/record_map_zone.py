@@ -8,6 +8,7 @@ class RecordMapZone(SQLModel, table=True):
     __tablename__ = "record_map_zones"
     __table_args__ = (
         UniqueConstraint("record_id", "map_zone_id", name="uq_record_map_zones_record_zone"),
+        {"extend_existing": True},
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)

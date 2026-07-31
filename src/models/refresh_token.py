@@ -7,6 +7,7 @@ from sqlmodel import Field, SQLModel
 
 class RefreshToken(SQLModel, table=True):
     __tablename__ = "refresh_tokens"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", index=True)
