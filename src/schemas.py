@@ -274,7 +274,6 @@ class SyncHistoryResponse(SQLModel):
 
 
 class OfflineConfigureRequest(SQLModel):
-    api_base_url: str = Field(min_length=1)
     email: str = Field(min_length=1)
     password: str = Field(min_length=1)
 

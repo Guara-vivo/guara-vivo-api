@@ -31,33 +31,35 @@ def get_fastapi_docs_config() -> dict[str, str | None]:
     return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
 
 
+async def seed_admin_user() -> None:
+    """Create the admin user from ADMIN_EMAIL/ADMIN_PASSWORD when it does not exist.
+
+    Runs in both modes. Offline it is what makes login possible on a fresh install,
+    because the local database starts without any user.
+    """
+    admin_email = os.getenv("ADMIN_EMAIL")
+    admin_password = os.getenv("ADMIN_PASSWORD")
+    if not (admin_email and admin_password):
+        return
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.email == admin_email.lower()))
+        if result.scalar_one_or_none() is None:
+            hashed_password = bcrypt.hashpw(admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            db.add(User(name="admin", email=admin_email.lower(), password=hashed_password))
+            await db.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    local_storage_path = os.getenv("LOCAL_STORAGE_PATH", "./data/storage")
-
     if OFFLINE_MODE:
         from database_local import init_local_db
-        from models_local import RecordLocal, UserLocal  # noqa - ensure tables registered
+
         await init_local_db()
-
-        if not os.path.exists(local_storage_path):
-            os.makedirs(local_storage_path, exist_ok=True)
-
+        await seed_admin_user()
         await sync_background.start()
     else:
-        async with AsyncSessionLocal() as db:
-            admin_email = os.getenv("ADMIN_EMAIL")
-            admin_password = os.getenv("ADMIN_PASSWORD")
-            
-            if admin_email and admin_password:
-                result = await db.execute(select(User).where(User.email == admin_email.lower()))
-                admin_user = result.scalar_one_or_none()
-                
-                if admin_user is None:
-                    hashed_password = bcrypt.hashpw(admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                    admin_user = User(email=admin_email.lower(), password=hashed_password)
-                    db.add(admin_user)
-                    await db.commit()
+        await seed_admin_user()
 
     try:
         yield
@@ -119,9 +121,11 @@ app.include_router(ibis.router)
 app.include_router(map_zones.router)
 
 if OFFLINE_MODE:
+    # Create the directory before mounting: StaticFiles needs it to exist, and the
+    # lifespan runs too late for the mount decision.
     local_storage_path = os.getenv("LOCAL_STORAGE_PATH", "./data/storage")
-    if os.path.exists(local_storage_path):
-        app.mount("/local-storage", StaticFiles(directory=local_storage_path), name="local_storage")
+    os.makedirs(local_storage_path, exist_ok=True)
+    app.mount("/local-storage", StaticFiles(directory=local_storage_path), name="local_storage")
     app.include_router(sync_routes.router)
     app.include_router(sync_ws.router)
 else:

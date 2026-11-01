@@ -27,14 +27,32 @@ def save_image(
     return f"/local-storage/{relative_path}"
 
 
-def delete_image(public_url: str) -> None:
-    relative = public_url.replace("/local-storage/", "", 1)
-    full_path = Path(LOCAL_STORAGE_PATH) / relative
-    if full_path.exists():
-        full_path.unlink()
+PUBLIC_PREFIX = "/local-storage/"
+
+
+def _resolve_inside_storage(public_url: str) -> Path | None:
+    """Map a public URL to a file under LOCAL_STORAGE_PATH, or None if it points anywhere else.
+
+    URLs come from clients (records.images is free text), so ``..`` segments and absolute
+    paths must never reach the filesystem.
+    """
+    if not isinstance(public_url, str) or not public_url.startswith(PUBLIC_PREFIX):
+        return None
+    root = Path(LOCAL_STORAGE_PATH).resolve()
+    candidate = (root / public_url[len(PUBLIC_PREFIX):]).resolve()
+    if candidate == root or root not in candidate.parents:
+        return None
+    return candidate
+
+
+def delete_image(public_url: str) -> bool:
+    full_path = _resolve_inside_storage(public_url)
+    if full_path is None or not full_path.is_file():
+        return False
+    full_path.unlink()
+    return True
 
 
 def get_image_absolute_path(public_url: str) -> Path | None:
-    relative = public_url.replace("/local-storage/", "", 1)
-    full_path = Path(LOCAL_STORAGE_PATH) / relative
-    return full_path if full_path.exists() else None
+    full_path = _resolve_inside_storage(public_url)
+    return full_path if full_path is not None and full_path.is_file() else None

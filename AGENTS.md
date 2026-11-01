@@ -47,7 +47,7 @@ python src/main.py
 - PostgreSQL is required. The app must fail fast if `DATABASE_URL` is missing or is not PostgreSQL.
 - Supabase is the current PostgreSQL provider; set the Supabase connection string in `.env` or `.env.docker-compose`.
 - Valid URL prefixes: `postgres://`, `postgresql://`, `postgresql+psycopg2://`.
-- SQLite is not supported by default and `database.db` must not be committed.
+- SQLite is supported only for `OFFLINE_MODE=true` (see Offline Mode); `database.db` must not be committed.
 - Do not reintroduce a local Postgres container unless explicitly requested.
 - PostgreSQL needs `psycopg2-binary` for Alembic and `asyncpg` for the async API runtime.
 - Runtime database access uses SQLAlchemy async engine/session (`create_async_engine`, `AsyncSession`, `async_sessionmaker`).
@@ -153,6 +153,17 @@ python src/seed.py
 - `RABBITMQ_DEFAULT_USER` and `RABBITMQ_DEFAULT_PASS` configure the local RabbitMQ Docker container.
 - `ERROR_QUEUE_NAME`, `IA_API_URL`, and `DEBUG_SAVE_IMAGES_DIR` are used by the worker container.
 - Do not commit `.env`, `.env.docker-compose`, real Supabase URLs, JWT secrets, or RabbitMQ passwords.
+
+## Offline Mode
+
+- `OFFLINE_MODE=true` runs the API on a local SQLite file (`LOCAL_DB_PATH`) with images in `LOCAL_STORAGE_PATH`, served at `/local-storage`. It is read once when `database` is imported, so online and offline cannot share a process.
+- The domain tables come from `src/models/` (same definitions as PostgreSQL; `Record.images/behavior` are native arrays on PostgreSQL and JSON on SQLite). Only the sync bookkeeping lives in `src/models_local/` (`sync_queue`, `id_mappings`); never import `models_local` in online mode, or Alembic would see those tables.
+- The local database starts empty: set `ADMIN_EMAIL`/`ADMIN_PASSWORD` so the admin is seeded and can log in. Then `POST /offline/configure` with the remote credentials stores a remote refresh token in `data/.auth_tokens`.
+- `REMOTE_API_URL` is server configuration only. It is never taken from a request.
+- Every `/offline/*` route requires a JWT.
+- Each offline write queues exactly one `sync_queue` item in the same transaction (`create_record`, `create_record_with_images`, `update_record`, `delete_record`). Remote ids are resolved through `id_mappings`; updates and deletes wait (deferred) until the create has synced. Deleting a record that never synced cancels its queue items.
+- Sync sends the remote user id (from `/users/refresh`), not the local one. Failed items are retried up to `SYNC_MAX_RETRIES` (default 5). A single lock (`sync_engine.sync_lock`) allows one sync at a time, shared by the background loop and `POST /offline/sync/trigger`.
+- Offline tests run in a separate process: `tests/test_offline_mode.py` launches `tests/offline_scenarios.py`.
 
 ## Request Hardening
 

@@ -31,8 +31,8 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def init_local_db() -> None:
-    from models_local import register_local_models
-    register_local_models()
+    import models  # noqa: F401 - registers the domain tables
+    import models_local  # noqa: F401 - registers the sync tables
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
     logger.info("Local SQLite database initialized at %s", get_local_db_path())

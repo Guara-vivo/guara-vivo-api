@@ -1,12 +1,15 @@
 from sqlmodel import SQLModel, Field, Relationship
 from datetime import datetime
 from typing import List, Literal, Optional, TYPE_CHECKING
-from sqlalchemy import CheckConstraint, Column, ARRAY, DateTime, Integer, String
+from sqlalchemy import CheckConstraint, Column, ARRAY, DateTime, Integer, JSON, String
 
 if TYPE_CHECKING:
     from models.analysis import Analysis
 
 birdbehavior = Literal["ninhando", "vocalizando", "alimentando-se", "voando"]
+
+# PostgreSQL keeps native arrays; SQLite (offline mode) stores the same lists as JSON.
+StringList = JSON().with_variant(ARRAY(String), "postgresql")
 
 
 class Record(SQLModel, table=True):
@@ -20,14 +23,16 @@ class Record(SQLModel, table=True):
             "analysis_progress >= 0 AND analysis_progress <= 100",
             name="ck_records_analysis_progress",
         ),
-        {"extend_existing": True},
+        # sqlite_autoincrement is ignored by PostgreSQL. Offline, it stops SQLite from reusing
+        # the id of a deleted record, which would collide with its id_mappings row.
+        {"extend_existing": True, "sqlite_autoincrement": True},
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    images: List[str] = Field(sa_column=Column(ARRAY(String)))
+    images: List[str] = Field(sa_column=Column(StringList))
     latitude_camera: float
     longitude_camera: float
-    behavior: List[birdbehavior] = Field(sa_column=Column(ARRAY(String)))
+    behavior: List[birdbehavior] = Field(sa_column=Column(StringList))
     date_time: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     user_id: int = Field(foreign_key="users.id", index=True)
     status: str = Field(default="pending", sa_column=Column(String, nullable=False))

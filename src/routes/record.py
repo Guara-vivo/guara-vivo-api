@@ -8,18 +8,17 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db, OFFLINE_MODE
 from middleware import MAX_REQUEST_BODY_BYTES
 from models import Analysis, AnalysisImage, Ibis, MapZone, Record, RecordMapZone, User
-from models.sync_queue import SyncQueueItem
-from models.id_mapping import IdMapping
 from rabbitmq import publish_record_for_inference
 from schemas import AnalysisImageRead, AnalysisRead, IbisRead, LinkedMapZoneRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
 from services.map_zone_service import point_inside_zone
 from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
+from storage_local import delete_image as delete_local_image
 from storage_local import save_image as save_image_local
 from utils.file_validation import validate_image_file
 
@@ -132,32 +131,56 @@ async def link_record_to_containing_zones(db: AsyncSession, db_record: Record) -
         linked_types.add(zone.type)
 
 
-async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Record:
+def enqueue_sync(
+    db: AsyncSession,
+    operation: str,
+    local_record_id: int,
+    payload: dict[str, Any],
+    image_local_paths: list[str] | None = None,
+) -> None:
+    from models_local import SyncQueueItem as SyncQueueItemLocal
+
+    db.add(
+        SyncQueueItemLocal(
+            operation=operation,
+            local_record_id=local_record_id,
+            payload=json.dumps(payload),
+            image_local_paths=json.dumps(image_local_paths) if image_local_paths else None,
+            status="pending",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+
+def record_sync_payload(record: Record) -> dict[str, Any]:
+    return RecordRead.model_validate(record).model_dump(
+        mode="json",
+        include={"images", "latitude_camera", "longitude_camera", "behavior", "date_time", "user_id"},
+    )
+
+
+async def commit_record_and_publish(
+    db: AsyncSession,
+    db_record: Record,
+    *,
+    image_local_paths: list[str] | None = None,
+) -> Record:
     db.add(db_record)
     await db.flush()
 
     if OFFLINE_MODE:
-        from models_local import SyncQueueItem as SyncQueueItemLocal
-
+        # Record and queue item are committed together, so a crash cannot leave a
+        # record that will never be synced. Exactly one item per record.
         db_record.status = "pending"
+        enqueue_sync(
+            db,
+            "create_record_with_images" if image_local_paths else "create_record",
+            db_record.id,
+            record_sync_payload(db_record),
+            image_local_paths,
+        )
         await db.commit()
         await db.refresh(db_record)
-
-        sync_item = SyncQueueItemLocal(
-            operation="create_record",
-            local_record_id=db_record.id,
-            payload=json.dumps({
-                "latitude_camera": db_record.latitude_camera,
-                "longitude_camera": db_record.longitude_camera,
-                "behavior": db_record.behavior,
-                "date_time": db_record.date_time.isoformat() if hasattr(db_record.date_time, 'isoformat') else str(db_record.date_time),
-                "user_id": db_record.user_id,
-            }),
-            status="pending",
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(sync_item)
-        await db.commit()
         invalidate_records_cache(db_record.user_id)
         return db_record
 
@@ -196,20 +219,29 @@ def inject_sync_info(payload: dict[str, Any], sync_info: tuple[bool, str | None,
     return payload
 
 
-async def get_sync_info(db: AsyncSession, record_id: int) -> tuple[bool, str | None, int | None]:
-    if not OFFLINE_MODE:
-        return True, None, None
+SyncInfo = tuple[bool, str | None, int | None]
+
+
+async def get_sync_infos(db: AsyncSession, record_ids: list[int]) -> dict[int, SyncInfo]:
+    """Sync status for many records with a single query."""
+    if not OFFLINE_MODE or not record_ids:
+        return {}
     from models_local import IdMapping as IdMappingLocal
-    result = await db.execute(
-        select(IdMappingLocal).where(
-            IdMappingLocal.local_id == record_id,
+
+    rows = await db.execute(
+        select(IdMappingLocal.local_id, IdMappingLocal.remote_id).where(
+            IdMappingLocal.local_id.in_(record_ids),
             IdMappingLocal.entity_type == "record",
         )
     )
-    mapping = result.scalar_one_or_none()
-    if mapping:
-        return True, "synced", mapping.remote_id
-    return False, "pending_sync", None
+    return {local_id: (True, "synced", remote_id) for local_id, remote_id in rows.all()}
+
+
+async def get_sync_info(db: AsyncSession, record_id: int) -> SyncInfo:
+    if not OFFLINE_MODE:
+        return True, None, None
+    infos = await get_sync_infos(db, [record_id])
+    return infos.get(record_id, (False, "pending_sync", None))
 
 
 def serialize_record_read(record: Record, map_zones: list[MapZone] | None = None) -> dict[str, Any]:
@@ -291,10 +323,10 @@ async def read_records(
         serialize_record_read(record, zones_by_record.get(record.id, []))
         for record in records
     ]
-    for record, payload in zip(records, payloads):
-        if OFFLINE_MODE:
-            sync_info = await get_sync_info(db, record.id)
-            inject_sync_info(payload, sync_info)
+    if OFFLINE_MODE:
+        infos = await get_sync_infos(db, [record.id for record in records])
+        for record, payload in zip(records, payloads):
+            inject_sync_info(payload, infos.get(record.id))
     return payloads
 
 
@@ -327,9 +359,9 @@ async def read_record_summaries(
         for record, analysis in rows
     ]
     if OFFLINE_MODE:
-        for record, item in zip([r for r, _ in rows], payload):
-            sync_info = await get_sync_info(db, record.id)
-            inject_sync_info(item, sync_info)
+        infos = await get_sync_infos(db, [record.id for record, _analysis in rows])
+        for (record, _analysis), item in zip(rows, payload):
+            inject_sync_info(item, infos.get(record.id))
     return set_cached_payload(response, cache_key, payload)
 
 
@@ -500,21 +532,7 @@ async def create_record_with_upload(
     record_data["status"] = "pending"
     record_data["analysis_progress"] = 0
     db_record = Record(**record_data)
-    created_record = await commit_record_and_publish(db, db_record)
-
-    if OFFLINE_MODE:
-        from models_local import SyncQueueItem as SyncQueueItemLocal
-        from models_local import RecordLocal
-        sync_item = SyncQueueItemLocal(
-            operation="create_record_with_images",
-            local_record_id=created_record.id,
-            payload=json.dumps(record_data),
-            image_local_paths=json.dumps(local_image_paths),
-            status="pending",
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(sync_item)
-        await db.commit()
+    created_record = await commit_record_and_publish(db, db_record, image_local_paths=local_image_paths)
 
     zones_by_record = await load_record_map_zones(db, [created_record.id])
     payload = serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
@@ -545,26 +563,56 @@ async def update_record(
     record.date_time = updated_record.date_time
     record.user_id = updated_record.user_id
     record.status = updated_record.status
+    if OFFLINE_MODE:
+        enqueue_sync(db, "update_record", record.id, updated_record.model_dump(mode="json"))
     await db.commit()
     await db.refresh(record)
     invalidate_records_cache(current_user.id)
-
-    if OFFLINE_MODE:
-        from models_local import SyncQueueItem as SyncQueueItemLocal
-        sync_item = SyncQueueItemLocal(
-            operation="update_record",
-            local_record_id=record.id,
-            payload=json.dumps(updated_record.model_dump()),
-            status="pending",
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(sync_item)
-        await db.commit()
 
     payload = serialize_record_read(record)
     if OFFLINE_MODE:
         inject_sync_info(payload)
     return payload
+
+async def queue_offline_delete(db: AsyncSession, record: Record) -> None:
+    """Propagate a local delete to the remote server, or drop it if it never got there."""
+    from models_local import IdMapping as IdMappingLocal
+    from models_local import SyncQueueItem as SyncQueueItemLocal
+
+    mapped = await db.execute(
+        select(IdMappingLocal.id).where(
+            IdMappingLocal.local_id == record.id,
+            IdMappingLocal.entity_type == "record",
+        )
+    )
+    if mapped.first() is not None:
+        enqueue_sync(db, "delete_record", record.id, {"user_id": record.user_id})
+        return
+
+    # Never reached the remote: nothing to delete there, and its queued create/update
+    # must not resurrect the record.
+    stale = await db.execute(
+        select(SyncQueueItemLocal).where(
+            SyncQueueItemLocal.local_record_id == record.id,
+            SyncQueueItemLocal.status.in_(("pending", "failed")),
+        )
+    )
+    for item in stale.scalars().all():
+        item.status = "cancelled"
+
+
+async def purge_offline_record_data(db: AsyncSession, record: Record) -> None:
+    """Delete the rows that hang off a record.
+
+    SQLite does not enforce foreign keys here, so nothing cascades: without this the
+    analyses, detections and zone links of a deleted record would be left dangling.
+    """
+    analysis_ids = select(Analysis.id).where(Analysis.recorder_id == record.id)
+    await db.execute(delete(Ibis).where(Ibis.analysis_id.in_(analysis_ids)))
+    await db.execute(delete(AnalysisImage).where(AnalysisImage.record_id == record.id))
+    await db.execute(delete(Analysis).where(Analysis.recorder_id == record.id))
+    await db.execute(delete(RecordMapZone).where(RecordMapZone.record_id == record.id))
+
 
 @router.delete("/{record_id}")
 async def delete_record(
@@ -578,8 +626,22 @@ async def delete_record(
     if record is None or record.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Not found")
 
+    local_images: list[str] = []
+    if OFFLINE_MODE:
+        local_images = list(record.images or [])
+        await queue_offline_delete(db, record)
+        await purge_offline_record_data(db, record)
+
     await db.delete(record)
     await db.commit()
     invalidate_records_cache(current_user.id)
+
+    # Only after the commit, so a failed delete never loses the files. Best effort: a
+    # leftover file is harmless, a failed request is not.
+    for url in local_images:
+        try:
+            delete_local_image(url)
+        except OSError:
+            pass
 
     return {"detail": "Record deleted successfully"}

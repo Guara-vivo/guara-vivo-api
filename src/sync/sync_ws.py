@@ -4,15 +4,15 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from database_local import AsyncSessionLocal
-from models_local import SyncQueueItem as SyncQueueItemLocal
 from security import get_user_from_access_token
 from sync.sync_background import (
     add_ws_client,
     get_connected,
     get_last_sync,
+    get_syncing,
     remove_ws_client,
 )
-from sqlalchemy import select, func
+from sync.sync_engine import count_syncable
 
 
 router = APIRouter(prefix="/offline", tags=["offline"])
@@ -41,13 +41,9 @@ async def _authenticate_ws(websocket: WebSocket):
             return None
 
 
-async def _count_pending() -> int:
+async def _count_pending(user_id: int) -> int:
     try:
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(func.count()).select_from(SyncQueueItemLocal).where(SyncQueueItemLocal.status == "pending")
-            )
-            return result.scalar() or 0
+        return await count_syncable(user_id)
     except Exception:
         return 0
 
@@ -68,8 +64,8 @@ async def offline_ws(websocket: WebSocket):
         await websocket.send_json({
             "type": "status",
             "connected": get_connected(),
-            "pending_sync": await _count_pending(),
-            "syncing": False,
+            "pending_sync": await _count_pending(current_user.id),
+            "syncing": get_syncing(),
             "last_sync_at": last_sync_at.isoformat() if last_sync_at else None,
             "last_sync_error": last_sync_error,
         })
@@ -78,7 +74,7 @@ async def offline_ws(websocket: WebSocket):
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=HEARTBEAT_SECONDS)
                 msg = json.loads(data)
-                if msg.get("type") == "ping":
+                if isinstance(msg, dict) and msg.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
             except asyncio.TimeoutError:
                 await websocket.send_json({"type": "heartbeat"})
