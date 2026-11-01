@@ -280,4 +280,3 @@ class OfflineConfigureRequest(SQLModel):
 
 class OfflineConfigureResponse(SQLModel):
     status: str
-    expires_at: datetime

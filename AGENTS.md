@@ -163,6 +163,8 @@ python src/seed.py
 - Every `/offline/*` route requires a JWT.
 - Each offline write queues exactly one `sync_queue` item in the same transaction (`create_record`, `create_record_with_images`, `update_record`, `delete_record`). Remote ids are resolved through `id_mappings`; updates and deletes wait (deferred) until the create has synced. Deleting a record that never synced cancels its queue items.
 - Sync sends the remote user id (from `/users/refresh`), not the local one. Failed items are retried up to `SYNC_MAX_RETRIES` (default 5). A single lock (`sync_engine.sync_lock`) allows one sync at a time, shared by the background loop and `POST /offline/sync/trigger`.
+- `data/.auth_tokens` holds each user's remote refresh token as plain JSON. `chmod 0o600` has no effect on Windows, so keep `data/` in a directory only the app's user can read.
+- Offline mode does not pull analysis results: the local `analyses`, `analysis_images` and `ibis` tables stay empty. A record shows `synced` once it reached the remote server; its analysis is viewed online.
 - Offline tests run in a separate process: `tests/test_offline_mode.py` launches `tests/offline_scenarios.py`.
 
 ## Request Hardening

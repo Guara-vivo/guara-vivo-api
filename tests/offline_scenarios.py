@@ -34,7 +34,7 @@ sys.modules["magic"] = magic_stub
 import httpx  # noqa: E402
 
 import main  # noqa: E402
-from schemas import OfflineConfigureRequest  # noqa: E402
+from schemas import OfflineConfigureRequest, OfflineConfigureResponse  # noqa: E402
 from sync import sync_background, sync_engine  # noqa: E402
 from sync.sync_engine import SyncEngine, SyncInProgress  # noqa: E402
 
@@ -144,6 +144,10 @@ async def scenarios():
             check(
                 "api_base_url" not in OfflineConfigureRequest.model_fields,
                 "configure cannot be pointed at an arbitrary server",
+            )
+            check(
+                set(OfflineConfigureResponse.model_fields) == {"status"},
+                "configure does not report a made-up expiry",
             )
 
             # --- upload: no 500, one queue item, images served ------------------------------
