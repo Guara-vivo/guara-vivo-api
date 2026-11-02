@@ -62,6 +62,17 @@ class ClientUuidSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RecordCreate(**RECORD, client_uuid="not-a-uuid")
 
+    def test_invalid_client_uuid_uses_the_documented_message(self):
+        from schemas import CLIENT_UUID_INVALID_MESSAGE, RecordCreate
+
+        self.assertEqual(
+            CLIENT_UUID_INVALID_MESSAGE,
+            "Identificador único da coleta (client_uuid) inválido ou ausente.",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            RecordCreate(**RECORD, client_uuid="not-a-uuid")
+        self.assertIn(CLIENT_UUID_INVALID_MESSAGE, str(ctx.exception))
+
     def test_update_schema_does_not_accept_client_uuid(self):
         from schemas import RecordUpdate
 
@@ -106,9 +117,10 @@ class IdempotentCreateTests(unittest.TestCase):
 
         self.patch([existing], commit)
         new = SimpleNamespace(id=None, user_id=1, client_uuid=UUID_A)
-        result = asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
+        result, created = asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
 
         self.assertIs(result, existing)
+        self.assertFalse(created)
         self.assertEqual(self.published, [])
 
     def test_new_record_is_created_once(self):
@@ -118,9 +130,10 @@ class IdempotentCreateTests(unittest.TestCase):
 
         self.patch([], commit)
         new = SimpleNamespace(id=None, user_id=1, client_uuid=UUID_A)
-        result = asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
+        result, created = asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
 
         self.assertIs(result, new)
+        self.assertTrue(created)
         self.assertEqual(len(self.published), 1)
 
     def test_failed_record_is_queued_again_on_retry(self):
@@ -135,7 +148,7 @@ class IdempotentCreateTests(unittest.TestCase):
 
         self.patch([existing], commit)
         new = SimpleNamespace(id=None, user_id=1, client_uuid=UUID_A)
-        result = asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
+        result, created = asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
 
         self.assertIs(result, existing)
         self.assertEqual((existing.status, existing.analysis_progress), ("pending", 0))
@@ -192,9 +205,10 @@ class IdempotentCreateTests(unittest.TestCase):
         self.patch([None, winner], commit)
         db = FakeDb()
         new = SimpleNamespace(id=None, user_id=1, client_uuid=UUID_A)
-        result = asyncio.run(self.routes.create_record_idempotently(db, new))
+        result, created = asyncio.run(self.routes.create_record_idempotently(db, new))
 
         self.assertIs(result, winner)
+        self.assertFalse(created)
         self.assertEqual(db.rollbacks, 1)
 
     def test_integrity_errors_without_a_match_are_not_swallowed(self):
@@ -216,6 +230,57 @@ class IdempotentCreateTests(unittest.TestCase):
         self.routes.commit_record_and_publish = commit
         # the real finder returns early for a missing uuid, without touching the db
         asyncio.run(self.routes.find_record_by_client_uuid(FakeDb(), 1, None))
+
+
+class CreateStatusCodeTests(unittest.TestCase):
+    """POST /records answers 201 for a new record and 200 for an idempotent replay."""
+
+    def setUp(self):
+        import routes.record as record_routes
+
+        self.routes = record_routes
+        self.originals = (
+            record_routes.create_record_idempotently,
+            record_routes.load_record_map_zones,
+            record_routes.serialize_record_read,
+        )
+
+        async def no_zones(_db, _ids):
+            return {}
+
+        record_routes.load_record_map_zones = no_zones
+        record_routes.serialize_record_read = lambda record, _zones=None: {"id": record.id}
+
+    def tearDown(self):
+        (
+            self.routes.create_record_idempotently,
+            self.routes.load_record_map_zones,
+            self.routes.serialize_record_read,
+        ) = self.originals
+
+    def call(self, created):
+        from fastapi import Response
+        from schemas import RecordCreate
+
+        async def fake(_db, record):
+            return SimpleNamespace(id=7), created
+
+        self.routes.create_record_idempotently = fake
+        response = Response()
+        user = SimpleNamespace(id=1)
+        asyncio.run(self.routes.create_record(RecordCreate(**RECORD), response, FakeDb(), user))
+        return response
+
+    def test_route_default_status_is_201(self):
+        for route in self.routes.router.routes:
+            if route.path in ("/records/", "/records/upload") and "POST" in route.methods:
+                self.assertEqual(route.status_code, 201, route.path)
+
+    def test_new_record_answers_201(self):
+        self.assertEqual(self.call(created=True).status_code, 201)
+
+    def test_replayed_record_answers_200(self):
+        self.assertEqual(self.call(created=False).status_code, 200)
 
 
 if __name__ == "__main__":

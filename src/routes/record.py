@@ -181,25 +181,27 @@ async def find_record_by_client_uuid(
     return result.scalar_one_or_none()
 
 
-async def create_record_idempotently(db: AsyncSession, db_record: Record) -> Record:
+async def create_record_idempotently(db: AsyncSession, db_record: Record) -> tuple[Record, bool]:
     """Create the record, or return the one already created with the same client_uuid.
+
+    Returns `(record, created)`; `created` is False when an existing record was returned.
 
     A client that lost the response to a create retries with the same client_uuid; that
     must not duplicate the record or queue the inference twice.
     """
     existing = await find_record_by_client_uuid(db, db_record.user_id, db_record.client_uuid)
     if existing is not None:
-        return await resume_existing_record(db, existing)
+        return await resume_existing_record(db, existing), False
 
     try:
-        return await commit_record_and_publish(db, db_record)
+        return await commit_record_and_publish(db, db_record), True
     except IntegrityError:
         # Two requests with the same client_uuid raced past the check above.
         await db.rollback()
         existing = await find_record_by_client_uuid(db, db_record.user_id, db_record.client_uuid)
         if existing is None:
             raise
-        return await resume_existing_record(db, existing)
+        return await resume_existing_record(db, existing), False
 
 
 def serialize_linked_map_zones(zones: list[MapZone]) -> list[dict[str, Any]]:
@@ -393,9 +395,10 @@ async def read_record(
     zones_by_record = await load_record_map_zones(db, [record.id])
     return serialize_record_read(record, zones_by_record.get(record.id, []))
 
-@router.post("/", response_model=RecordRead)
+@router.post("/", response_model=RecordRead, status_code=201)
 async def create_record(
     record: RecordCreate,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -407,13 +410,15 @@ async def create_record(
     record_data["status"] = "pending"
     record_data["analysis_progress"] = 0
     db_record = Record(**record_data)
-    created_record = await create_record_idempotently(db, db_record)
+    created_record, created = await create_record_idempotently(db, db_record)
+    response.status_code = 201 if created else 200
     zones_by_record = await load_record_map_zones(db, [created_record.id])
     return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
 
 
-@router.post("/upload", response_model=RecordRead)
+@router.post("/upload", response_model=RecordRead, status_code=201)
 async def create_record_with_upload(
+    response: Response,
     latitude_camera: float = Form(..., ge=-90, le=90),
     longitude_camera: float = Form(..., ge=-180, le=180),
     behavior: list[str] = Form(...),
@@ -435,6 +440,7 @@ async def create_record_with_upload(
     existing = await find_record_by_client_uuid(db, current_user.id, client_uuid)
     if existing is not None:
         existing = await resume_existing_record(db, existing)
+        response.status_code = 200
         zones_by_record = await load_record_map_zones(db, [existing.id])
         return serialize_record_read(existing, zones_by_record.get(existing.id, []))
 
@@ -488,7 +494,8 @@ async def create_record_with_upload(
     record_data["status"] = "pending"
     record_data["analysis_progress"] = 0
     db_record = Record(**record_data)
-    created_record = await create_record_idempotently(db, db_record)
+    created_record, created = await create_record_idempotently(db, db_record)
+    response.status_code = 201 if created else 200
     zones_by_record = await load_record_map_zones(db, [created_record.id])
     return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
 

@@ -146,13 +146,16 @@ class RecordBase(SQLModel):
         return normalize_timezone(value)
 
 
+CLIENT_UUID_INVALID_MESSAGE = "Identificador único da coleta (client_uuid) inválido ou ausente."
+
+
 def normalize_client_uuid(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     try:
         return str(UUID(str(value)))
     except ValueError as exc:
-        raise ValueError("client_uuid must be a valid UUID") from exc
+        raise ValueError(CLIENT_UUID_INVALID_MESSAGE) from exc
 
 
 class RecordCreate(RecordBase):
