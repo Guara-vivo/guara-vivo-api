@@ -36,6 +36,13 @@ RECORD = dict(
 class FakeDb:
     def __init__(self):
         self.rollbacks = 0
+        self.commits = 0
+
+    async def commit(self):
+        self.commits += 1
+
+    async def refresh(self, _record):
+        return None
 
     async def rollback(self):
         self.rollbacks += 1
@@ -91,7 +98,7 @@ class IdempotentCreateTests(unittest.TestCase):
         self.routes.commit_record_and_publish = commit
 
     def test_existing_record_is_returned_without_creating_or_publishing(self):
-        existing = SimpleNamespace(id=7, user_id=1, client_uuid=UUID_A)
+        existing = SimpleNamespace(id=7, user_id=1, client_uuid=UUID_A, status="pending")
 
         async def commit(_db, _record):
             self.published.append("created")
@@ -116,8 +123,67 @@ class IdempotentCreateTests(unittest.TestCase):
         self.assertIs(result, new)
         self.assertEqual(len(self.published), 1)
 
+    def test_failed_record_is_queued_again_on_retry(self):
+        existing = SimpleNamespace(id=7, user_id=1, client_uuid=UUID_A, status="failed", analysis_progress=40)
+        queued = []
+        original = self.routes.publish_record_for_inference
+        self.routes.publish_record_for_inference = queued.append
+        self.addCleanup(setattr, self.routes, "publish_record_for_inference", original)
+
+        async def commit(_db, record):
+            return record
+
+        self.patch([existing], commit)
+        new = SimpleNamespace(id=None, user_id=1, client_uuid=UUID_A)
+        result = asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
+
+        self.assertIs(result, existing)
+        self.assertEqual((existing.status, existing.analysis_progress), ("pending", 0))
+        self.assertEqual(queued, [7])
+
+    def test_failed_record_stays_failed_if_queueing_fails_again(self):
+        from fastapi import HTTPException
+
+        existing = SimpleNamespace(id=7, user_id=1, client_uuid=UUID_A, status="failed", analysis_progress=0)
+
+        def broken(_record_id):
+            raise RuntimeError("rabbit down")
+
+        original = self.routes.publish_record_for_inference
+        self.routes.publish_record_for_inference = broken
+        self.addCleanup(setattr, self.routes, "publish_record_for_inference", original)
+
+        async def commit(_db, record):
+            return record
+
+        self.patch([existing], commit)
+        new = SimpleNamespace(id=None, user_id=1, client_uuid=UUID_A)
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
+
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(existing.status, "failed")
+
+    def test_pending_or_completed_record_is_not_queued_again(self):
+        queued = []
+        original = self.routes.publish_record_for_inference
+        self.routes.publish_record_for_inference = queued.append
+        self.addCleanup(setattr, self.routes, "publish_record_for_inference", original)
+
+        async def commit(_db, record):
+            return record
+
+        for status in ("pending", "processing", "completed"):
+            existing = SimpleNamespace(id=7, user_id=1, client_uuid=UUID_A, status=status, analysis_progress=10)
+            self.patch([existing], commit)
+            new = SimpleNamespace(id=None, user_id=1, client_uuid=UUID_A)
+            asyncio.run(self.routes.create_record_idempotently(FakeDb(), new))
+            self.assertEqual(existing.status, status)
+
+        self.assertEqual(queued, [])
+
     def test_race_on_unique_constraint_returns_the_winner(self):
-        winner = SimpleNamespace(id=9, user_id=1, client_uuid=UUID_A)
+        winner = SimpleNamespace(id=9, user_id=1, client_uuid=UUID_A, status="pending")
 
         async def commit(_db, _record):
             raise IntegrityError("insert", {}, Exception("duplicate"))

@@ -136,7 +136,11 @@ async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Reco
     await link_record_to_containing_zones(db, db_record)
     await db.commit()
     await db.refresh(db_record)
+    await publish_or_mark_failed(db, db_record)
+    return db_record
 
+
+async def publish_or_mark_failed(db: AsyncSession, db_record: Record) -> None:
     try:
         publish_record_for_inference(db_record.id)
     except Exception as exc:
@@ -149,7 +153,21 @@ async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Reco
         ) from exc
 
     invalidate_records_cache(db_record.user_id)
-    return db_record
+
+
+async def resume_existing_record(db: AsyncSession, record: Record) -> Record:
+    """Answer a repeated create with the record that already exists.
+
+    A record left `failed` (the first attempt could not be queued, or inference gave up)
+    would otherwise be reported as sent and never analyzed, so the retry queues it again.
+    """
+    if record.status == "failed":
+        record.status = "pending"
+        record.analysis_progress = 0
+        await db.commit()
+        await db.refresh(record)
+        await publish_or_mark_failed(db, record)
+    return record
 
 
 async def find_record_by_client_uuid(
@@ -171,7 +189,7 @@ async def create_record_idempotently(db: AsyncSession, db_record: Record) -> Rec
     """
     existing = await find_record_by_client_uuid(db, db_record.user_id, db_record.client_uuid)
     if existing is not None:
-        return existing
+        return await resume_existing_record(db, existing)
 
     try:
         return await commit_record_and_publish(db, db_record)
@@ -181,7 +199,7 @@ async def create_record_idempotently(db: AsyncSession, db_record: Record) -> Rec
         existing = await find_record_by_client_uuid(db, db_record.user_id, db_record.client_uuid)
         if existing is None:
             raise
-        return existing
+        return await resume_existing_record(db, existing)
 
 
 def serialize_linked_map_zones(zones: list[MapZone]) -> list[dict[str, Any]]:
@@ -416,6 +434,7 @@ async def create_record_with_upload(
     # A retry of an upload that already succeeded must not store the images again.
     existing = await find_record_by_client_uuid(db, current_user.id, client_uuid)
     if existing is not None:
+        existing = await resume_existing_record(db, existing)
         zones_by_record = await load_record_map_zones(db, [existing.id])
         return serialize_record_read(existing, zones_by_record.get(existing.id, []))
 
