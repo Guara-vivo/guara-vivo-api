@@ -9,12 +9,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from middleware import MAX_REQUEST_BODY_BYTES
 from models import Analysis, AnalysisImage, Ibis, MapZone, Record, RecordMapZone, User
 from rabbitmq import publish_record_for_inference
-from schemas import AnalysisImageRead, AnalysisRead, IbisRead, LinkedMapZoneRead, RecordCreate, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
+from schemas import AnalysisImageRead, AnalysisRead, IbisRead, LinkedMapZoneRead, RecordCreate, normalize_client_uuid, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
 from services.map_zone_service import point_inside_zone
 from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
@@ -135,7 +136,11 @@ async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Reco
     await link_record_to_containing_zones(db, db_record)
     await db.commit()
     await db.refresh(db_record)
+    await publish_or_mark_failed(db, db_record)
+    return db_record
 
+
+async def publish_or_mark_failed(db: AsyncSession, db_record: Record) -> None:
     try:
         publish_record_for_inference(db_record.id)
     except Exception as exc:
@@ -148,7 +153,53 @@ async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Reco
         ) from exc
 
     invalidate_records_cache(db_record.user_id)
-    return db_record
+
+
+async def resume_existing_record(db: AsyncSession, record: Record) -> Record:
+    """Answer a repeated create with the record that already exists.
+
+    A record left `failed` (the first attempt could not be queued, or inference gave up)
+    would otherwise be reported as sent and never analyzed, so the retry queues it again.
+    """
+    if record.status == "failed":
+        record.status = "pending"
+        record.analysis_progress = 0
+        await db.commit()
+        await db.refresh(record)
+        await publish_or_mark_failed(db, record)
+    return record
+
+
+async def find_record_by_client_uuid(
+    db: AsyncSession, user_id: int, client_uuid: str | None
+) -> Record | None:
+    if not client_uuid:
+        return None
+    result = await db.execute(
+        select(Record).where(Record.user_id == user_id, Record.client_uuid == client_uuid)
+    )
+    return result.scalar_one_or_none()
+
+
+async def create_record_idempotently(db: AsyncSession, db_record: Record) -> Record:
+    """Create the record, or return the one already created with the same client_uuid.
+
+    A client that lost the response to a create retries with the same client_uuid; that
+    must not duplicate the record or queue the inference twice.
+    """
+    existing = await find_record_by_client_uuid(db, db_record.user_id, db_record.client_uuid)
+    if existing is not None:
+        return await resume_existing_record(db, existing)
+
+    try:
+        return await commit_record_and_publish(db, db_record)
+    except IntegrityError:
+        # Two requests with the same client_uuid raced past the check above.
+        await db.rollback()
+        existing = await find_record_by_client_uuid(db, db_record.user_id, db_record.client_uuid)
+        if existing is None:
+            raise
+        return await resume_existing_record(db, existing)
 
 
 def serialize_linked_map_zones(zones: list[MapZone]) -> list[dict[str, Any]]:
@@ -356,7 +407,7 @@ async def create_record(
     record_data["status"] = "pending"
     record_data["analysis_progress"] = 0
     db_record = Record(**record_data)
-    created_record = await commit_record_and_publish(db, db_record)
+    created_record = await create_record_idempotently(db, db_record)
     zones_by_record = await load_record_map_zones(db, [created_record.id])
     return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
 
@@ -368,11 +419,24 @@ async def create_record_with_upload(
     behavior: list[str] = Form(...),
     date_time: datetime = Form(...),
     images: list[UploadFile] = File(...),
+    client_uuid: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     if not 1 <= len(images) <= 20:
         raise HTTPException(status_code=422, detail="images must contain between 1 and 20 files")
+
+    try:
+        client_uuid = normalize_client_uuid(client_uuid)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # A retry of an upload that already succeeded must not store the images again.
+    existing = await find_record_by_client_uuid(db, current_user.id, client_uuid)
+    if existing is not None:
+        existing = await resume_existing_record(db, existing)
+        zones_by_record = await load_record_map_zones(db, [existing.id])
+        return serialize_record_read(existing, zones_by_record.get(existing.id, []))
 
     public_urls = []
     total_size = 0
@@ -415,6 +479,7 @@ async def create_record_with_upload(
             behavior=parse_behavior_form_values(behavior),
             date_time=date_time,
             user_id=current_user.id,
+            client_uuid=client_uuid,
         )
     except (ValidationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -423,7 +488,7 @@ async def create_record_with_upload(
     record_data["status"] = "pending"
     record_data["analysis_progress"] = 0
     db_record = Record(**record_data)
-    created_record = await commit_record_and_publish(db, db_record)
+    created_record = await create_record_idempotently(db, db_record)
     zones_by_record = await load_record_map_zones(db, [created_record.id])
     return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
 

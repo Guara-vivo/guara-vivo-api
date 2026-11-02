@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
             if admin_user is None:
                 # Create admin with provided credentials
                 hashed_password = bcrypt.hashpw(admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                admin_user = User(email=admin_email.lower(), password=hashed_password)
+                admin_user = User(name="admin", email=admin_email.lower(), password=hashed_password)
                 db.add(admin_user)
                 await db.commit()
 

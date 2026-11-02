@@ -41,6 +41,14 @@ class ReviewFixTests(unittest.TestCase):
             {"docs_url": None, "redoc_url": None, "openapi_url": None},
         )
 
+    def test_admin_seed_sets_the_required_name(self):
+        import inspect
+
+        import main
+
+        # users.name is NOT NULL: the seed used to omit it and fail on an empty database
+        self.assertIn('User(name="admin"', inspect.getsource(main.lifespan))
+
     def test_record_create_does_not_accept_client_progress(self):
         from schemas import RecordCreate
 
