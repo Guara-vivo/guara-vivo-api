@@ -13,8 +13,8 @@ class AnalysisImage(SQLModel, table=True):
     __tablename__ = "analysis_images"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    analysis_id: int = Field(foreign_key="analyses.id", index=True)
-    record_id: int = Field(foreign_key="records.id", index=True)
+    analysis_id: int = Field(foreign_key="analyses.id", index=True, ondelete="CASCADE")
+    record_id: int = Field(foreign_key="records.id", index=True, ondelete="CASCADE")
     image_index: int
     image_url: str
     ibis_quantity: int
@@ -22,7 +22,10 @@ class AnalysisImage(SQLModel, table=True):
     created_at: DateTimeType = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     
     analysis: "Analysis" = Relationship(back_populates="image_analyses")
-    detections: List["Ibis"] = Relationship(back_populates="analysis_image")
+    detections: List["Ibis"] = Relationship(
+        back_populates="analysis_image",
+        sa_relationship_kwargs={"cascade": "all", "passive_deletes": True},
+    )
 
     class Config:
         from_attributes = True

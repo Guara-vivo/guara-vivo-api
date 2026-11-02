@@ -14,10 +14,16 @@ class Analysis(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     ibis_quantity: int
     datetime: DateTimeType = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    recorder_id: int = Field(foreign_key="records.id", unique=True)
+    recorder_id: int = Field(foreign_key="records.id", unique=True, ondelete="CASCADE")
     record: "Record" = Relationship(back_populates="analysis")
-    birds: List["Ibis"] = Relationship(back_populates="analysis")
-    image_analyses: List["AnalysisImage"] = Relationship(back_populates="analysis")
+    birds: List["Ibis"] = Relationship(
+        back_populates="analysis",
+        sa_relationship_kwargs={"cascade": "all", "passive_deletes": True},
+    )
+    image_analyses: List["AnalysisImage"] = Relationship(
+        back_populates="analysis",
+        sa_relationship_kwargs={"cascade": "all", "passive_deletes": True},
+    )
 
     class Config:
         from_attributes = True

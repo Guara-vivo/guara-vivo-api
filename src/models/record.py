@@ -36,7 +36,7 @@ class Record(SQLModel, table=True):
     client_uuid: Optional[str] = Field(default=None, sa_column=Column(String(36), nullable=True))
     analysis: Optional["Analysis"] = Relationship(
         back_populates="record", 
-        sa_relationship_kwargs={"uselist": False}
+        sa_relationship_kwargs={"uselist": False, "cascade": "all", "passive_deletes": True}
     )
 
     class Config:
