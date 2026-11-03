@@ -58,6 +58,7 @@ class UserUpdate(UserBase):
 
 class UserRead(UserBase):
     id: int
+    is_admin: bool = False
 
 
 class UserLogin(SQLModel):

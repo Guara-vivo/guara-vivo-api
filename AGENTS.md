@@ -239,6 +239,7 @@ No test files in repo yet. Add tests to `tests/` dir with `pytest`.
 
 ## Hardening Notes (2026-06)
 
+- `UserRead` (/users/me, login, refresh) exposes `is_admin` so clients can hide admin-only actions.
 - Passwords: 8-72 **bytes** on create/update (bcrypt 5 raises above 72). Login accepts shorter legacy passwords and always runs one bcrypt check, even for unknown emails.
 - `users.is_admin` (migration `20260607_0015`) gates map-zone writes. Startup promotes the configured `ADMIN_EMAIL` account.
 - Upload: the MIME type detected from magic bytes (not the client header) is stored and decides the extension. Files stored for a request that fails are deleted from Storage. `records.images` must be URLs under `users/{user_id}/records/` of the configured bucket (checked when `SUPABASE_URL` is set); `status` cannot be set by clients.

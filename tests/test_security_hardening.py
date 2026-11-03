@@ -139,3 +139,13 @@ class AdminAndCascadeTests(unittest.TestCase):
         for table, column in ((Record, "user_id"), (RefreshToken, "user_id"), (MapZone, "user_id")):
             fk = list(table.__table__.c[column].foreign_keys)[0]
             self.assertEqual(fk.ondelete, "CASCADE", f"{table.__tablename__}.{column}")
+
+
+class UserReadTests(unittest.TestCase):
+    def test_user_read_exposes_is_admin_but_not_password(self):
+        from schemas import UserRead
+
+        user = SimpleNamespace(id=1, name="a", email="a@b.com", password="hash", is_admin=True)
+        data = UserRead.model_validate(user, from_attributes=True).model_dump()
+        self.assertTrue(data["is_admin"])
+        self.assertNotIn("password", data)
