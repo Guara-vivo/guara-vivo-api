@@ -30,7 +30,7 @@ class Record(SQLModel, table=True):
     longitude_camera: float
     behavior: List[birdbehavior] = Field(sa_column=Column(ARRAY(String)))
     date_time: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    user_id: int = Field(foreign_key="users.id", index=True)
+    user_id: int = Field(foreign_key="users.id", index=True, ondelete="CASCADE")
     status: str = Field(default="pending", sa_column=Column(String, nullable=False))
     analysis_progress: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
     client_uuid: Optional[str] = Field(default=None, sa_column=Column(String(36), nullable=True))

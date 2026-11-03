@@ -1,7 +1,7 @@
 import bcrypt
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 from time import monotonic
@@ -26,6 +26,10 @@ def verify_password(password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
     except ValueError:
         return False
+
+
+# Verified against when the email does not exist, so both paths cost one bcrypt check.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password", bcrypt.gensalt()).decode("utf-8")
 
 
 def enforce_login_rate_limit(request: Request) -> None:
@@ -182,7 +186,11 @@ async def login(
     enforce_login_rate_limit(request)
     db_user = await get_user_by_email(db, str(user_login.email))
 
-    if db_user is None or not verify_password(user_login.password, db_user.password):
+    password_ok = verify_password(
+        user_login.password,
+        db_user.password if db_user is not None else _DUMMY_PASSWORD_HASH,
+    )
+    if db_user is None or not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -249,7 +257,7 @@ async def read_user(
     current_user: User = Depends(get_current_user),
 ):
     if current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        raise HTTPException(status_code=404, detail="User not found")
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -281,7 +289,7 @@ async def update_user(
     current_user: User = Depends(get_current_user),
 ):
     if current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        raise HTTPException(status_code=404, detail="User not found")
 
     result = await db.execute(select(User).where(User.id == user_id))
     db_user = result.scalar_one_or_none()
@@ -289,13 +297,23 @@ async def update_user(
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if not verify_password(user.current_password, db_user.password):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
     existing_user = await get_user_by_email(db, str(user.email))
     if existing_user is not None and existing_user.id != user_id:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     db_user.name = user.name
     db_user.email = str(user.email)
-    db_user.password = hash_password(user.password)
+    if user.password is not None:
+        db_user.password = hash_password(user.password)
+        # A password change must end every other session.
+        await db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(timezone.utc))
+        )
 
     await db.commit()
     await db.refresh(db_user)
@@ -309,7 +327,7 @@ async def delete_user(
     current_user: User = Depends(get_current_user),
 ):
     if current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        raise HTTPException(status_code=404, detail="User not found")
 
     result = await db.execute(select(User).where(User.id == user_id))
     db_user = result.scalar_one_or_none()

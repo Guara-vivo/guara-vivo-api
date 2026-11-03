@@ -15,7 +15,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://user:password@localhost:5432/test
+          JWT_SECRET_KEY: ci-only-secret
+        run: python -m pytest -q
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 45
 

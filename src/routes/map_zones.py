@@ -92,11 +92,18 @@ async def read_map_zone_records(
     ]
 
 
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    # 404 rather than 403: do not advertise admin-only endpoints.
+    if not current_user.is_admin:
+        raise HTTPException(status_code=404, detail="Not found")
+    return current_user
+
+
 @router.post("/", response_model=MapZoneRead)
 async def create_map_zone(
     zone: MapZoneCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     """Create a new map zone."""
     existing_result = await db.execute(select(MapZone).where(MapZone.type == zone.type))
@@ -156,7 +163,7 @@ async def create_map_zone(
 async def delete_map_zone(
     zone_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     """Delete a map zone. Only creator can delete."""
     result = await db.execute(select(MapZone).where(MapZone.id == zone_id))
