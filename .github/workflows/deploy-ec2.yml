@@ -43,6 +43,7 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
         run: |
           set -Eeuo pipefail
           test -n "${EC2_HOST}" || { echo "EC2_HOST secret is required" >&2; exit 1; }
@@ -52,7 +53,13 @@ jobs:
           chmod 700 ~/.ssh
           printf '%s\n' "${EC2_SSH_KEY}" > ~/.ssh/guara-vivo-ec2
           chmod 600 ~/.ssh/guara-vivo-ec2
-          ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts
+          # Pin the server's host key. Scanning it on every run trusts whoever answers first.
+          if [ -n "${EC2_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "${EC2_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
+          else
+            echo "::warning::EC2_KNOWN_HOSTS secret is not set; trusting the host key on first contact (open to man-in-the-middle). Add it, then this fallback can be removed."
+            ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts
+          fi
 
       - name: Create production env file
         env:
@@ -206,4 +213,5 @@ jobs:
             git fetch --prune origin main; \
             git reset --hard origin/main; \
             install -m 600 /tmp/guara-vivo.env /opt/guara-vivo/guara-vivo-api/.env.docker-compose; \
+            rm -f /tmp/guara-vivo.env; \
             DEPLOY_HEALTHCHECK_URL='${DEPLOY_HEALTHCHECK_URL}' bash scripts/deploy-ec2.sh"

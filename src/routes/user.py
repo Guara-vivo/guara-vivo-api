@@ -4,17 +4,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
-from time import monotonic
 from database import get_db
 from models import RefreshToken, User
 from schemas import LogoutRequest, RefreshTokenRequest, Token, UserCreate, UserLogin, UserRead, UserUpdate
+from ratelimit import RateLimiter
 from security import create_access_token, create_refresh_token, get_current_user, hash_refresh_token
 
 router = APIRouter(prefix="/users", tags=["users"])
-LOGIN_RATE_LIMIT_MAX = 5
-LOGIN_RATE_LIMIT_WINDOW_SECONDS = 60
-MAX_RATE_LIMIT_ENTRIES = 10000  # Prevent unbounded growth
-_login_attempts: dict[str, list[float]] = {}
+# Per-process limits (see ratelimit.py). Login is limited per IP and, more loosely, per
+# email: the per-email limit slows password guessing spread over many IPs, and is loose
+# enough that spamming a victim's email only locks them out briefly.
+login_ip_limiter = RateLimiter(max_attempts=5, window_seconds=60)
+login_email_limiter = RateLimiter(max_attempts=10, window_seconds=600)
+register_ip_limiter = RateLimiter(max_attempts=20, window_seconds=3600)
+refresh_ip_limiter = RateLimiter(max_attempts=30, window_seconds=60)
 
 
 def hash_password(password: str) -> str:
@@ -32,32 +35,18 @@ def verify_password(password: str, hashed_password: str) -> bool:
 _DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password", bcrypt.gensalt()).decode("utf-8")
 
 
-def enforce_login_rate_limit(request: Request) -> None:
-    client_host = request.client.host if request.client else "unknown"
-    now = monotonic()
-    
-    # Prune old entries for this client (older than window)
-    attempts = [
-        attempt
-        for attempt in _login_attempts.get(client_host, [])
-        if now - attempt < LOGIN_RATE_LIMIT_WINDOW_SECONDS
-    ]
-    
-    if len(attempts) >= LOGIN_RATE_LIMIT_MAX:
-        _login_attempts[client_host] = attempts
+def enforce_rate_limit(limiter: RateLimiter, key: str) -> None:
+    allowed, retry_after = limiter.hit(key)
+    if not allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many login attempts. Try again later.",
+            detail="Too many attempts. Try again later.",
+            headers={"Retry-After": str(int(retry_after) + 1)},
         )
-    
-    attempts.append(now)
-    _login_attempts[client_host] = attempts
-    
-    # Cleanup: remove old IPs if map grows too large
-    if len(_login_attempts) > MAX_RATE_LIMIT_ENTRIES:
-        # Remove entries with no recent attempts
-        _login_attempts.clear()
-        _login_attempts[client_host] = attempts
+
+
+def get_client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
@@ -183,7 +172,8 @@ async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    enforce_login_rate_limit(request)
+    enforce_rate_limit(login_ip_limiter, get_client_key(request))
+    enforce_rate_limit(login_email_limiter, str(user_login.email).lower())
     db_user = await get_user_by_email(db, str(user_login.email))
 
     password_ok = verify_password(
@@ -213,6 +203,7 @@ async def refresh_token(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    enforce_rate_limit(refresh_ip_limiter, get_client_key(request))
     db_user, access_token, refresh_token_str = await validate_and_rotate_refresh_token_atomically(
         db, payload.refresh_token, request
     )
@@ -268,7 +259,8 @@ async def read_user(
     return user
 
 @router.post("/", response_model=UserRead)
-async def create_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
+async def create_user(user: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    enforce_rate_limit(register_ip_limiter, get_client_key(request))
     existing_user = await get_user_by_email(db, str(user.email))
     if existing_user is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
