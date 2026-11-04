@@ -19,7 +19,7 @@ class MapZone(SQLModel, table=True):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     radius_meters: int = Field(default=50, ge=10, le=5000)
-    user_id: int = Field(foreign_key="users.id", index=True)
+    user_id: int = Field(foreign_key="users.id", index=True, ondelete="CASCADE")
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
     class Config:

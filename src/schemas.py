@@ -26,21 +26,45 @@ class UserBase(SQLModel):
         return str(email).lower()
 
 
+PASSWORD_MAX_BYTES = 72  # bcrypt ignores/rejects anything beyond 72 bytes
+
+
+def validate_password_bytes(password: str) -> str:
+    if len(password.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        raise ValueError(f"password must be at most {PASSWORD_MAX_BYTES} bytes")
+    return password
+
+
 class UserCreate(UserBase):
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def check_password_bytes(cls, value: str) -> str:
+        return validate_password_bytes(value)
 
 
 class UserUpdate(UserBase):
-    password: str = Field(min_length=6, max_length=128)
+    # Changing credentials requires proof of the current password.
+    current_password: str = Field(min_length=1, max_length=128)
+    # Optional: omit to keep the current password.
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def check_password_bytes(cls, value: Optional[str]) -> Optional[str]:
+        return validate_password_bytes(value) if value is not None else value
 
 
 class UserRead(UserBase):
     id: int
+    is_admin: bool = False
 
 
 class UserLogin(SQLModel):
     email: EmailStr
-    password: str = Field(min_length=6, max_length=128)
+    # Lenient on purpose: accounts created under the old (shorter) policy must still log in.
+    password: str = Field(min_length=1, max_length=128)
 
     @field_validator("email")
     @classmethod

@@ -238,7 +238,11 @@ class CreateStatusCodeTests(unittest.TestCase):
     def setUp(self):
         import routes.record as record_routes
 
+        import supabase_storage
+
         self.routes = record_routes
+        self.original_supabase_url = supabase_storage.SUPABASE_URL
+        supabase_storage.SUPABASE_URL = ""  # URL ownership is covered in test_security_hardening
         self.originals = (
             record_routes.create_record_idempotently,
             record_routes.load_record_map_zones,
@@ -252,6 +256,9 @@ class CreateStatusCodeTests(unittest.TestCase):
         record_routes.serialize_record_read = lambda record, _zones=None: {"id": record.id}
 
     def tearDown(self):
+        import supabase_storage
+
+        supabase_storage.SUPABASE_URL = self.original_supabase_url
         (
             self.routes.create_record_idempotently,
             self.routes.load_record_map_zones,

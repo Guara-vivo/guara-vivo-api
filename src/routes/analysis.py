@@ -3,9 +3,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import Analysis, Record, User
 from database import get_db
-from schemas import AnalysisCreate, AnalysisRead, AnalysisUpdate
+from schemas import AnalysisRead
 from security import get_current_user
 
+# Read-only: analyses are written exclusively by the worker.
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 @router.get("/", response_model=list[AnalysisRead])
@@ -45,75 +46,3 @@ async def read_analysis(
         raise HTTPException(status_code=404, detail="Not found")
     
     return analysis
-
-@router.post("/", response_model=AnalysisRead)
-async def create_analysis(
-    analysis: AnalysisCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = await db.execute(select(Record).where(Record.id == analysis.recorder_id))
-    record = result.scalar_one_or_none()
-    if record is None or record.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    db_analysis = Analysis(**analysis.model_dump())
-
-    db.add(db_analysis)
-    await db.commit()
-    await db.refresh(db_analysis)
-
-    return db_analysis
-
-@router.put("/{analysis_id}", response_model=AnalysisRead)
-async def update_analysis(
-    analysis_id: int,
-    updated_analysis: AnalysisUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
-    analysis = result.scalar_one_or_none()
-
-    if analysis is None:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    result = await db.execute(select(Record).where(Record.id == analysis.recorder_id))
-    current_record = result.scalar_one_or_none()
-    if current_record is None or current_record.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    result = await db.execute(select(Record).where(Record.id == updated_analysis.recorder_id))
-    record = result.scalar_one_or_none()
-    if record is None or record.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    analysis.ibis_quantity = updated_analysis.ibis_quantity
-    analysis.datetime = updated_analysis.datetime
-    analysis.recorder_id = updated_analysis.recorder_id
-    await db.commit()
-    await db.refresh(analysis)
-
-    return analysis
-
-@router.delete("/{analysis_id}")
-async def delete_analysis(
-    analysis_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = await db.execute(select(Analysis).where(Analysis.id == analysis_id))
-    analysis = result.scalar_one_or_none()
-
-    if analysis is None:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    result = await db.execute(select(Record).where(Record.id == analysis.recorder_id))
-    record = result.scalar_one_or_none()
-    if record is None or record.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Not found")
-    
-    await db.delete(analysis)
-    await db.commit()
-
-    return {"detail": "Analysis deleted successfully"}

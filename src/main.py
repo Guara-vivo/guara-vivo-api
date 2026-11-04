@@ -41,8 +41,12 @@ async def lifespan(app: FastAPI):
             if admin_user is None:
                 # Create admin with provided credentials
                 hashed_password = bcrypt.hashpw(admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                admin_user = User(name="admin", email=admin_email.lower(), password=hashed_password)
+                admin_user = User(name="admin", email=admin_email.lower(), password=hashed_password, is_admin=True)
                 db.add(admin_user)
+                await db.commit()
+            elif not admin_user.is_admin:
+                # Accounts that predate users.is_admin: the configured admin keeps its powers.
+                admin_user.is_admin = True
                 await db.commit()
 
     try:

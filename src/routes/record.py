@@ -1,5 +1,6 @@
 import json
 import hashlib
+import logging
 import os
 import time
 from datetime import datetime
@@ -18,9 +19,10 @@ from rabbitmq import publish_record_for_inference
 from schemas import AnalysisImageRead, AnalysisRead, IbisRead, LinkedMapZoneRead, RecordCreate, normalize_client_uuid, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
 from services.map_zone_service import point_inside_zone
-from supabase_storage import MAX_UPLOAD_FILE_BYTES, upload_public_image
+from supabase_storage import MAX_UPLOAD_FILE_BYTES, delete_uploaded_images, is_own_storage_url, upload_public_image
 from utils.file_validation import validate_image_file
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/records", tags=["records"])
 RECORDS_CACHE_TTL_SECONDS = int(os.getenv("RECORDS_CACHE_TTL_SECONDS", "30"))
 RECORDS_CACHE_MAX_ENTRIES = int(os.getenv("RECORDS_CACHE_MAX_ENTRIES", "1000"))
@@ -97,6 +99,15 @@ def invalidate_all_records_cache() -> None:
     _records_cache.clear()
 
 
+def ensure_images_belong_to_user(images: list[str], user_id: int) -> None:
+    """Images must be files this API stored for the user; never arbitrary URLs."""
+    if not all(is_own_storage_url(image, user_id) for image in images):
+        raise HTTPException(
+            status_code=422,
+            detail="images must be uploaded through /records/upload",
+        )
+
+
 def parse_behavior_form_values(values: list[str]) -> list[str]:
     if len(values) == 1:
         value = values[0].strip()
@@ -144,12 +155,13 @@ async def publish_or_mark_failed(db: AsyncSession, db_record: Record) -> None:
     try:
         publish_record_for_inference(db_record.id)
     except Exception as exc:
+        logger.exception("could not queue record %s for inference", db_record.id)
         db_record.status = "failed"
         await db.commit()
         invalidate_records_cache(db_record.user_id)
         raise HTTPException(
             status_code=503,
-            detail=f"Record created but could not be queued for inference: {exc}",
+            detail="Record created but could not be queued for inference. Retry with the same client_uuid.",
         ) from exc
 
     invalidate_records_cache(db_record.user_id)
@@ -406,11 +418,87 @@ async def create_record(
     if record.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
+    ensure_images_belong_to_user(record.images, current_user.id)
+
     record_data = record.model_dump()
     record_data["status"] = "pending"
     record_data["analysis_progress"] = 0
     db_record = Record(**record_data)
     created_record, created = await create_record_idempotently(db, db_record)
+    response.status_code = 201 if created else 200
+    zones_by_record = await load_record_map_zones(db, [created_record.id])
+    return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
+
+
+async def _store_images_and_create_record(
+    *,
+    db: AsyncSession,
+    images: list[UploadFile],
+    public_urls: list[str],
+    current_user: User,
+    latitude_camera: float,
+    longitude_camera: float,
+    behavior: list[str],
+    date_time: datetime,
+    client_uuid: str | None,
+    response: Response,
+) -> dict[str, Any]:
+    """Validate and store the images, then create the record.
+
+    `public_urls` is filled as files are stored so the caller can delete them on any failure.
+    """
+    total_size = 0
+
+    for image in images:
+        content = await image.read()
+        if not content:
+            raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is empty")
+        if len(content) > MAX_UPLOAD_FILE_BYTES:
+            raise HTTPException(status_code=413, detail=f"{image.filename or 'file'} is too large")
+
+        total_size += len(content)
+        if total_size > MAX_TOTAL_UPLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="Total upload size exceeds limit")
+
+        # Magic-byte validation; the detected type (not the client's header) is what gets stored.
+        detected_mime = validate_image_file(image.filename or "file", content)
+
+        try:
+            public_urls.append(
+                await upload_public_image(
+                    user_id=current_user.id,
+                    content=content,
+                    content_type=detected_mime,
+                )
+            )
+        except Exception as exc:
+            logger.exception("image upload to storage failed")
+            raise HTTPException(status_code=502, detail="Could not store the uploaded image") from exc
+
+        del content
+
+    try:
+        record = RecordCreate(
+            images=public_urls,
+            latitude_camera=latitude_camera,
+            longitude_camera=longitude_camera,
+            behavior=parse_behavior_form_values(behavior),
+            date_time=date_time,
+            user_id=current_user.id,
+            client_uuid=client_uuid,
+        )
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    record_data = record.model_dump()
+    record_data["status"] = "pending"
+    record_data["analysis_progress"] = 0
+    db_record = Record(**record_data)
+    created_record, created = await create_record_idempotently(db, db_record)
+    if not created:
+        # A concurrent request with the same client_uuid won; our files are unused.
+        await delete_uploaded_images(public_urls)
+        public_urls.clear()
     response.status_code = 201 if created else 200
     zones_by_record = await load_record_map_zones(db, [created_record.id])
     return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
@@ -444,60 +532,25 @@ async def create_record_with_upload(
         zones_by_record = await load_record_map_zones(db, [existing.id])
         return serialize_record_read(existing, zones_by_record.get(existing.id, []))
 
-    public_urls = []
-    total_size = 0
-    
-    for image in images:
-        content = await image.read()
-        if not content:
-            raise HTTPException(status_code=422, detail=f"{image.filename or 'file'} is empty")
-        if len(content) > MAX_UPLOAD_FILE_BYTES:
-            raise HTTPException(status_code=413, detail=f"{image.filename or 'file'} is too large")
-        
-        # Check aggregate size limit
-        total_size += len(content)
-        if total_size > MAX_TOTAL_UPLOAD_SIZE:
-            raise HTTPException(status_code=413, detail="Total upload size exceeds limit (10MB)")
-        
-        # Validate file by magic bytes
-        validate_image_file(image.filename or "file", content)
-
-        try:
-            public_urls.append(
-                await upload_public_image(
-                    user_id=current_user.id,
-                    content=content,
-                    filename=image.filename,
-                    content_type=image.content_type or "image/jpeg",
-                )
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Could not upload image to Supabase: {exc}") from exc
-        
-        # Explicitly release memory after each file
-        del content
-
+    public_urls: list[str] = []
     try:
-        record = RecordCreate(
-            images=public_urls,
+        created_record = await _store_images_and_create_record(
+            db=db,
+            images=images,
+            public_urls=public_urls,
+            current_user=current_user,
             latitude_camera=latitude_camera,
             longitude_camera=longitude_camera,
-            behavior=parse_behavior_form_values(behavior),
+            behavior=behavior,
             date_time=date_time,
-            user_id=current_user.id,
             client_uuid=client_uuid,
+            response=response,
         )
-    except (ValidationError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    record_data = record.model_dump()
-    record_data["status"] = "pending"
-    record_data["analysis_progress"] = 0
-    db_record = Record(**record_data)
-    created_record, created = await create_record_idempotently(db, db_record)
-    response.status_code = 201 if created else 200
-    zones_by_record = await load_record_map_zones(db, [created_record.id])
-    return serialize_record_read(created_record, zones_by_record.get(created_record.id, []))
+    except BaseException:
+        # Nothing references these files if the record was not created.
+        await delete_uploaded_images(public_urls)
+        raise
+    return created_record
 
 @router.put("/{record_id}", response_model=RecordRead)
 async def update_record(
@@ -515,13 +568,15 @@ async def update_record(
     if updated_record.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
+    ensure_images_belong_to_user(updated_record.images, current_user.id)
+
     record.images = updated_record.images
     record.latitude_camera = updated_record.latitude_camera
     record.longitude_camera = updated_record.longitude_camera
     record.behavior = updated_record.behavior
     record.date_time = updated_record.date_time
     record.user_id = updated_record.user_id
-    record.status = updated_record.status
+    # `status` is owned by the worker; a client-sent value is ignored.
     await db.commit()
     await db.refresh(record)
     invalidate_records_cache(current_user.id)
