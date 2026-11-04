@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from models import Record
 from security import get_user_from_access_token
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/records/progress", tags=["record-progress"])
 NOTIFY_CHANNEL = os.getenv("PROGRESS_NOTIFY_CHANNEL", "record_progress")
 HEARTBEAT_SECONDS = int(os.getenv("WEBSOCKET_HEARTBEAT_SECONDS", "25"))
@@ -24,6 +26,14 @@ RECORD_STATUSES = {"pending", "processing", "completed", "failed"}
 
 
 ProgressEvent = dict[str, int | str]
+
+
+def asyncpg_dsn(url: str) -> str:
+    """asyncpg only understands postgres:// and postgresql://, not the SQLAlchemy driver suffixes."""
+    for prefix in ("postgresql+asyncpg://", "postgresql+psycopg2://"):
+        if url.startswith(prefix):
+            return "postgresql://" + url[len(prefix):]
+    return url
 
 
 @dataclass(eq=False)
@@ -58,13 +68,25 @@ class ProgressConnectionManager:
         self._clients_by_user: dict[int, set[ProgressClient]] = defaultdict(set)
         self._lock = asyncio.Lock()
         self._reconnect_task: asyncio.Task | None = None
+        self._background_tasks: set[asyncio.Task] = set()
+        # Set by start(): keep listening (and reconnecting) even with no websocket clients,
+        # because the listener also keeps the HTTP caches fresh.
+        self._keep_alive = False
+
+    async def start(self) -> None:
+        self._keep_alive = True
+        try:
+            await self.ensure_listener()
+        except Exception:
+            logger.exception("could not start the progress listener; will retry")
+            self._schedule_reconnect()
 
     async def ensure_listener(self) -> None:
         async with self._lock:
             if self._connection is not None and not self._connection.is_closed():
                 return
 
-            connection = await asyncpg.connect(DEFAULT_DATABASE_URL)
+            connection = await asyncpg.connect(asyncpg_dsn(DEFAULT_DATABASE_URL))
             await connection.add_listener(NOTIFY_CHANNEL, self._listener)
             connection.add_termination_listener(self._handle_termination)
             self._connection = connection
@@ -92,6 +114,7 @@ class ProgressConnectionManager:
             reconnect_task = self._reconnect_task
             self._connection = None
             self._reconnect_task = None
+            self._keep_alive = False
             self._clients_by_user.clear()
 
         if reconnect_task is not None:
@@ -106,17 +129,21 @@ class ProgressConnectionManager:
         if event is None:
             return
 
-        asyncio.create_task(self._broadcast(event))
+        task = asyncio.create_task(self._broadcast(event))
+        self._background_tasks.add(task)  # keep a reference until it finishes
+        task.add_done_callback(self._background_tasks.discard)
 
     def _handle_termination(self, _connection) -> None:
         self._connection = None
+        self._schedule_reconnect()
 
-        if self._clients_by_user and self._reconnect_task is None:
+    def _schedule_reconnect(self) -> None:
+        if (self._clients_by_user or self._keep_alive) and self._reconnect_task is None:
             self._reconnect_task = asyncio.create_task(self._reconnect_until_connected())
 
     async def _reconnect_until_connected(self) -> None:
         try:
-            while self._clients_by_user:
+            while self._clients_by_user or self._keep_alive:
                 try:
                     await self.ensure_listener()
                     return
@@ -127,6 +154,11 @@ class ProgressConnectionManager:
 
     async def _broadcast(self, event: ProgressEvent) -> None:
         user_id = event["user_id"]
+
+        # The worker changed this user's records: cached summaries/details are now stale.
+        from routes.record import invalidate_records_cache
+
+        invalidate_records_cache(user_id)
 
         async with self._lock:
             clients = list(self._clients_by_user.get(user_id, set()))

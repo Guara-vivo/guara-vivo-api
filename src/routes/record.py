@@ -1,9 +1,10 @@
+import asyncio
 import json
 import hashlib
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -55,7 +56,7 @@ def get_cached_payload(request: Request, response: Response, cache_key: str) -> 
         return None
 
     headers = {
-        "Cache-Control": f"private, max-age={RECORDS_CACHE_TTL_SECONDS}",
+        "Cache-Control": "private, no-cache",
         "ETag": etag,
     }
     for name, value in headers.items():
@@ -72,7 +73,7 @@ def set_cached_payload(response: Response, cache_key: str, payload: Any) -> Any:
     etag = build_etag(payload)
     _records_cache[cache_key] = (time.monotonic(), etag, payload)
     prune_records_cache()
-    response.headers["Cache-Control"] = f"private, max-age={RECORDS_CACHE_TTL_SECONDS}"
+    response.headers["Cache-Control"] = "private, no-cache"
     response.headers["ETag"] = etag
     return payload
 
@@ -153,7 +154,8 @@ async def commit_record_and_publish(db: AsyncSession, db_record: Record) -> Reco
 
 async def publish_or_mark_failed(db: AsyncSession, db_record: Record) -> None:
     try:
-        publish_record_for_inference(db_record.id)
+        # pika is blocking; keep it off the event loop.
+        await asyncio.to_thread(publish_record_for_inference, db_record.id)
     except Exception as exc:
         logger.exception("could not queue record %s for inference", db_record.id)
         db_record.status = "failed"
@@ -164,6 +166,8 @@ async def publish_or_mark_failed(db: AsyncSession, db_record: Record) -> None:
             detail="Record created but could not be queued for inference. Retry with the same client_uuid.",
         ) from exc
 
+    db_record.queued_at = datetime.now(timezone.utc)
+    await db.commit()
     invalidate_records_cache(db_record.user_id)
 
 

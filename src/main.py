@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import os
 
 import bcrypt
@@ -9,9 +10,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from routes import user, record, analysis, ibis, map_zones, progress
-from database import AsyncSessionLocal
+from database import AsyncSessionLocal, engine
 from models import User
 from middleware import BodyLimitMiddleware
+from requeue import run_requeue_loop
 
 
 def get_cors_origins() -> list[str]:
@@ -49,10 +51,16 @@ async def lifespan(app: FastAPI):
                 admin_user.is_admin = True
                 await db.commit()
 
+    await progress.progress_manager.start()
+    requeue_task = asyncio.create_task(run_requeue_loop())
+
     try:
         yield
     finally:
+        requeue_task.cancel()
+        await asyncio.gather(requeue_task, return_exceptions=True)
         await progress.close_progress_manager()
+        await engine.dispose()
 
 
 app = FastAPI(lifespan=lifespan, **get_fastapi_docs_config())

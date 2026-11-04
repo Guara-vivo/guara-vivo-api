@@ -38,11 +38,14 @@ def publish_record_for_inference(record_id: int) -> None:
     connection = get_connection()
     try:
         channel = connection.channel()
+        # Publisher confirms: basic_publish raises if the broker does not accept the message.
+        channel.confirm_delivery()
         channel.queue_declare(queue=QUEUE_NAME, durable=True)
         channel.basic_publish(
             exchange="",
             routing_key=QUEUE_NAME,
             body=payload,
+            mandatory=True,
             properties=pika.BasicProperties(
                 delivery_mode=pika.DeliveryMode.Persistent,
                 content_type="application/json",
