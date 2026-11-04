@@ -149,3 +149,49 @@ class UserReadTests(unittest.TestCase):
         data = UserRead.model_validate(user, from_attributes=True).model_dump()
         self.assertTrue(data["is_admin"])
         self.assertNotIn("password", data)
+
+
+class JwtTests(unittest.TestCase):
+    def setUp(self):
+        import security
+
+        self.security = security
+        self.user = SimpleNamespace(id=7, email="a@b.com")
+
+    def decode(self, token):
+        import jwt
+
+        return jwt.decode(token, self.security.JWT_SECRET_KEY, algorithms=[self.security.JWT_ALGORITHM])
+
+    def run_user_lookup(self, token):
+        class Result:
+            def scalar_one_or_none(self_inner):
+                return SimpleNamespace(id=7)
+
+        class Db:
+            async def execute(self_inner, _q):
+                return Result()
+
+        return asyncio.run(self.security.get_user_from_access_token(token, Db()))
+
+    def test_access_token_round_trip(self):
+        token = self.security.create_access_token(self.user)
+        self.assertEqual(self.decode(token)["sub"], "7")
+        self.assertEqual(self.run_user_lookup(token).id, 7)
+
+    def test_rejects_expired_wrong_type_wrong_key_and_alg_none(self):
+        import time
+        import jwt
+
+        key, alg = self.security.JWT_SECRET_KEY, self.security.JWT_ALGORITHM
+        bad = {
+            "expired": jwt.encode({"sub": "7", "type": "access", "exp": int(time.time()) - 10}, key, algorithm=alg),
+            "refresh_type": jwt.encode({"sub": "7", "type": "refresh", "exp": int(time.time()) + 60}, key, algorithm=alg),
+            "wrong_key": jwt.encode({"sub": "7", "type": "access", "exp": int(time.time()) + 60}, "another-key-another-key-another-key", algorithm=alg),
+            "alg_none": jwt.encode({"sub": "7", "type": "access", "exp": int(time.time()) + 60}, None, algorithm="none"),
+            "garbage": "not-a-token",
+        }
+        for name, token in bad.items():
+            with self.assertRaises(HTTPException, msg=name) as ctx:
+                self.run_user_lookup(token)
+            self.assertEqual(ctx.exception.status_code, 401, name)

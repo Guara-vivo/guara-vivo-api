@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 512m
     ports:
       - "127.0.0.1:8001:8001"
     environment:
@@ -43,6 +44,15 @@ services:
       context: ../guara-vivo-identifier
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Loads YOLO11x + a Keras model on CPU. Idle use is ~0.8 GB; the cap stops one bad request
+    # from taking the whole host (7.6 GB shared with the API, worker, RabbitMQ and netdata).
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
     networks:
       - guara-vivo-network
 
@@ -51,6 +61,7 @@ services:
       context: ../guara-vivo-worker
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 512m
     environment:
       DATABASE_URL: ${DATABASE_URL}
       RABBITMQ_HOST: ${RABBITMQ_HOST}
@@ -85,6 +96,7 @@ services:
     # Pinned to the minor series: the data volume must not jump versions on a plain redeploy.
     image: rabbitmq:3.13-management
     restart: unless-stopped
+    mem_limit: 1g
     ports:
       - "127.0.0.1:5672:5672"
       - "127.0.0.1:15672:15672"
