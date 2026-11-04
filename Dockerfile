@@ -12,7 +12,8 @@ RUN python -m venv "$VIRTUAL_ENV"
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY requirements.txt .
-RUN pip install --upgrade pip \n    && pip install -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
 
 
 # --- runtime stage: no compilers, only what the app needs to run ---
