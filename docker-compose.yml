@@ -82,7 +82,8 @@ services:
       - guara-vivo-network
 
   rabbitmq:
-    image: rabbitmq:3-management
+    # Pinned to the minor series: the data volume must not jump versions on a plain redeploy.
+    image: rabbitmq:3.13-management
     restart: unless-stopped
     ports:
       - "127.0.0.1:5672:5672"
