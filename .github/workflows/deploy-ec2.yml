@@ -89,6 +89,8 @@ jobs:
           RABBITMQ_HEARTBEAT_SECONDS: ${{ secrets.RABBITMQ_HEARTBEAT_SECONDS }}
           RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS: ${{ secrets.RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS }}
           DEBUG_MAX_RUNS: ${{ secrets.DEBUG_MAX_RUNS }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: |
           set -Eeuo pipefail
 
@@ -102,6 +104,8 @@ jobs:
           require_secret JWT_SECRET_KEY
           require_secret SUPABASE_URL
           require_secret SUPABASE_SERVICE_ROLE_KEY
+          require_secret ADMIN_EMAIL
+          require_secret ADMIN_PASSWORD
           require_secret RABBITMQ_USER
           require_secret RABBITMQ_PASSWORD
           require_secret RABBITMQ_DEFAULT_USER
@@ -170,6 +174,8 @@ jobs:
           RABBITMQ_HEARTBEAT_SECONDS=${RABBITMQ_HEARTBEAT_SECONDS}
           RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS=${RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS}
           DEBUG_MAX_RUNS=${DEBUG_MAX_RUNS}
+          ADMIN_EMAIL=${ADMIN_EMAIL}
+          ADMIN_PASSWORD=${ADMIN_PASSWORD}
           EOF
 
           sed -i 's/^          //' .env.deploy
