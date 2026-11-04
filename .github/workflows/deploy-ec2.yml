@@ -33,6 +33,21 @@ jobs:
           JWT_SECRET_KEY: ci-only-secret
         run: python -m pytest -q
 
+  audit:
+    # Visible in the run, but never blocks a deploy: new advisories appear over time and must
+    # not stop an urgent fix from shipping.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit dependencies
+        run: pip install pip-audit && pip-audit -r requirements.txt
+
   deploy:
     needs: test
     runs-on: ubuntu-latest
