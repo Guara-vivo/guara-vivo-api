@@ -159,3 +159,99 @@ class ProgressTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListenerHealthTests(unittest.TestCase):
+    def manager(self, connection):
+        from routes.progress import ProgressConnectionManager
+
+        manager = ProgressConnectionManager()
+        manager._connection = connection
+        manager._keep_alive = True
+        self.reconnects = 0
+
+        def schedule():
+            self.reconnects += 1
+
+        manager._schedule_reconnect = schedule
+        return manager
+
+    def test_healthy_connection_is_left_alone(self):
+        class Conn:
+            def is_closed(self):
+                return False
+
+            async def execute(self, _sql):
+                return "SELECT 1"
+
+        conn = Conn()
+        manager = self.manager(conn)
+        self.assertTrue(asyncio.run(manager.check_listener()))
+        self.assertIs(manager._connection, conn)
+        self.assertEqual(self.reconnects, 0)
+
+    def test_hung_connection_is_terminated_and_rebuilt(self):
+        import routes.progress as progress
+
+        class Conn:
+            terminated = False
+
+            def is_closed(self):
+                return False
+
+            async def execute(self, _sql):
+                await asyncio.sleep(60)  # half-open socket: the server never answers
+
+            def terminate(self):
+                self.terminated = True
+
+        original = progress.LISTENER_PING_TIMEOUT_SECONDS
+        progress.LISTENER_PING_TIMEOUT_SECONDS = 0.05
+        self.addCleanup(setattr, progress, "LISTENER_PING_TIMEOUT_SECONDS", original)
+
+        conn = Conn()
+        manager = self.manager(conn)
+        self.assertFalse(asyncio.run(manager.check_listener()))
+        self.assertTrue(conn.terminated)
+        self.assertIsNone(manager._connection)
+        self.assertEqual(self.reconnects, 1)
+
+    def test_failing_ping_triggers_reconnect(self):
+        class Conn:
+            def is_closed(self):
+                return False
+
+            async def execute(self, _sql):
+                raise ConnectionResetError("reset")
+
+            def terminate(self):
+                pass
+
+        manager = self.manager(Conn())
+        self.assertFalse(asyncio.run(manager.check_listener()))
+        self.assertEqual(self.reconnects, 1)
+
+    def test_missing_connection_is_rebuilt_even_if_no_termination_event_came(self):
+        manager = self.manager(None)
+        self.assertFalse(asyncio.run(manager.check_listener()))
+        self.assertEqual(self.reconnects, 1)
+
+    def test_start_launches_the_watchdog_and_close_stops_it(self):
+        from routes.progress import ProgressConnectionManager
+
+        async def scenario():
+            manager = ProgressConnectionManager()
+
+            async def no_connect():
+                return None
+
+            manager.ensure_listener = no_connect
+            await manager.start()
+            task = manager._health_task
+            self.assertIsNotNone(task)
+            await manager.close()
+            await asyncio.sleep(0)
+            return task
+
+        task = asyncio.run(scenario())
+        self.assertTrue(task.cancelled() or task.done())

@@ -22,6 +22,10 @@ HEARTBEAT_SECONDS = int(os.getenv("WEBSOCKET_HEARTBEAT_SECONDS", "25"))
 AUTH_TIMEOUT_SECONDS = int(os.getenv("WEBSOCKET_AUTH_TIMEOUT_SECONDS", "5"))
 CLIENT_QUEUE_MAX_SIZE = int(os.getenv("WEBSOCKET_CLIENT_QUEUE_MAX_SIZE", "100"))
 POSTGRES_RECONNECT_SECONDS = int(os.getenv("WEBSOCKET_POSTGRES_RECONNECT_SECONDS", "5"))
+# An idle LISTEN connection can be dropped by the pooler/network without the socket closing, and
+# asyncpg then never notices. A ping this often (and its timeout) is how we find out.
+LISTENER_PING_SECONDS = int(os.getenv("PROGRESS_LISTENER_PING_SECONDS", "30"))
+LISTENER_PING_TIMEOUT_SECONDS = int(os.getenv("PROGRESS_LISTENER_PING_TIMEOUT_SECONDS", "10"))
 RECORD_STATUSES = {"pending", "processing", "completed", "failed"}
 
 
@@ -72,9 +76,12 @@ class ProgressConnectionManager:
         # Set by start(): keep listening (and reconnecting) even with no websocket clients,
         # because the listener also keeps the HTTP caches fresh.
         self._keep_alive = False
+        self._health_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._keep_alive = True
+        if self._health_task is None:
+            self._health_task = asyncio.create_task(self._watch_connection())
         try:
             await self.ensure_listener()
         except Exception:
@@ -90,6 +97,40 @@ class ProgressConnectionManager:
             await connection.add_listener(NOTIFY_CHANNEL, self._listener)
             connection.add_termination_listener(self._handle_termination)
             self._connection = connection
+
+    async def _watch_connection(self) -> None:
+        """Detect a dead listener connection and rebuild it.
+
+        Without this a silently dropped connection looks healthy forever: no NOTIFY arrives,
+        no progress reaches the websockets and the HTTP caches are never invalidated.
+        """
+        while True:
+            await asyncio.sleep(LISTENER_PING_SECONDS)
+            try:
+                await self.check_listener()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("progress listener health check failed")
+
+    async def check_listener(self) -> bool:
+        """Ping the listener connection. Returns True when it is healthy."""
+        connection = self._connection
+        if connection is None or connection.is_closed():
+            self._connection = None
+            self._schedule_reconnect()
+            return False
+
+        try:
+            await asyncio.wait_for(connection.execute("SELECT 1"), LISTENER_PING_TIMEOUT_SECONDS)
+            return True
+        except Exception:
+            logger.warning("progress listener connection is dead; reconnecting")
+            if self._connection is connection:
+                self._connection = None
+            connection.terminate()
+            self._schedule_reconnect()
+            return False
 
     async def add_client(self, client: ProgressClient) -> None:
         await self.ensure_listener()
@@ -109,6 +150,10 @@ class ProgressConnectionManager:
                 self._clients_by_user.pop(client.user_id, None)
 
     async def close(self) -> None:
+        health_task, self._health_task = self._health_task, None
+        if health_task is not None:
+            health_task.cancel()
+
         async with self._lock:
             connection = self._connection
             reconnect_task = self._reconnect_task
