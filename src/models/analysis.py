@@ -1,7 +1,8 @@
 from sqlmodel import SQLModel, Field, Relationship
 from datetime import datetime as DateTimeType
 from typing import List, Optional, TYPE_CHECKING
-from sqlalchemy import Column, DateTime
+from sqlalchemy import Column, DateTime, String
+from sqlalchemy.dialects.postgresql import ARRAY
 
 if TYPE_CHECKING:
     from models.ibis import Ibis
@@ -15,6 +16,8 @@ class Analysis(SQLModel, table=True):
     ibis_quantity: int
     datetime: DateTimeType = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     recorder_id: int = Field(foreign_key="records.id", unique=True, ondelete="CASCADE")
+    status_analise: Optional[str] = Field(default=None, sa_column=Column(String(30), nullable=True))
+    avisos: Optional[List[str]] = Field(default=None, sa_column=Column(ARRAY(String), nullable=True))
     record: "Record" = Relationship(back_populates="analysis")
     birds: List["Ibis"] = Relationship(
         back_populates="analysis",

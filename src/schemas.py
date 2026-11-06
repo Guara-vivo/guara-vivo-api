@@ -236,6 +236,8 @@ class AnalysisUpdate(AnalysisBase):
 
 class AnalysisRead(AnalysisBase):
     id: int
+    status_analise: Optional[str] = None
+    avisos: Optional[List[str]] = None
 
 
 class IbisBase(SQLModel):

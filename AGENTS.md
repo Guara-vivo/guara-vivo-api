@@ -61,7 +61,7 @@ python src/main.py
 - Apply migrations with `alembic upgrade head` before starting the API.
 - Create a migration after model changes with `alembic revision --autogenerate -m "message"`, then review the generated file before applying it.
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
-- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007` -> `20260520_0008` -> `20260526_0009` -> `20260603_0010` -> `20260604_0011` -> `20260605_0012` -> `20260606_0013` -> `20260606_0014` -> `20260607_0015` -> `20260608_0016` (head).
+- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007` -> `20260520_0008` -> `20260526_0009` -> `20260603_0010` -> `20260604_0011` -> `20260605_0012` -> `20260606_0013` -> `20260606_0014` -> `20260607_0015` -> `20260608_0016` -> `20260609_0017` (head).
 - `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
 - `d3a87201af95_add_status_column_to_records_table.py` adds `records.status` with idempotent logic to handle both initial schema creation and migration scenarios. Backfills existing rows to `pending` and makes the column `NOT NULL`.
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
@@ -79,6 +79,7 @@ python src/main.py
 - `20260606_0014_cascade_record_deletes.py` recreates the foreign keys so deleting a record cascades to its analysis, images and ibis.
 - `20260607_0015_user_admin_and_cascade.py` adds `users.is_admin` (default false) and recreates user-related foreign keys with cascade.
 - `20260608_0016_add_record_queued_at.py` adds `records.queued_at` (default now) plus partial index `ix_records_pending_queued_at` on pending rows, used by `src/requeue.py`.
+- `20260609_0017_add_analysis_status_and_warnings.py` adds nullable `analyses.status_analise` (`ok|atencao|sem_ave|sem_guara`) and `analyses.avisos` (`varchar[]` of warning codes) from the identifier's root response. The worker must write them; `AnalysisRead` exposes them. The API returns codes only; user-facing text belongs to the frontend. `ibis.color`/`age_group` are free strings, so the identifier's `indefinido` is accepted as is; per-guará `status_analise`/`avisos` live in `ibis.raw_detection`.
 - If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
 - Alembic remains synchronous and reads `DATABASE_URL` from process env or `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
@@ -247,7 +248,7 @@ Tests live in `tests/` and run with `pytest` (also in CI before deploy). Files: 
 - `database.db` was removed and is ignored.
 - Local Docker Compose includes RabbitMQ but no database container.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
-- Schema reference as of Alembic head `20260608_0016` (details per revision in Migrations): `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and atomic rotation, and key lookup indexes exist.
+- Schema reference as of Alembic head `20260609_0017` (details per revision in Migrations): `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and atomic rotation, and key lookup indexes exist.
 - **Plan Mode**: During planning phases, only generate plans and architecture. Do not output code blocks or file modifications. Wait for explicit implementation command before making any changes.
 
 ## Hardening Notes (2026-06)
