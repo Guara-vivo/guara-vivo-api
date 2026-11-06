@@ -29,6 +29,11 @@ RECORDS_CACHE_TTL_SECONDS = int(os.getenv("RECORDS_CACHE_TTL_SECONDS", "30"))
 RECORDS_CACHE_MAX_ENTRIES = int(os.getenv("RECORDS_CACHE_MAX_ENTRIES", "1000"))
 MAX_TOTAL_UPLOAD_SIZE = MAX_REQUEST_BODY_BYTES
 _records_cache: dict[str, tuple[float, str, Any]] = {}
+# Bumped on every invalidation. A request reads its token BEFORE querying the database and only
+# stores its result if the token is unchanged, so a read that raced with a worker commit (and
+# saw the old data) cannot repopulate the cache after the invalidation.
+_user_cache_versions: dict[int, int] = {}
+_global_cache_version = 0
 
 
 def get_cache_key(*parts: object) -> str:
@@ -68,11 +73,22 @@ def get_cached_payload(request: Request, response: Response, cache_key: str) -> 
     return payload
 
 
-def set_cached_payload(response: Response, cache_key: str, payload: Any) -> Any:
+def get_cache_token(user_id: int) -> tuple[int, int]:
+    return (_global_cache_version, _user_cache_versions.get(user_id, 0))
+
+
+def set_cached_payload(
+    response: Response,
+    cache_key: str,
+    payload: Any,
+    user_id: int | None = None,
+    token: tuple[int, int] | None = None,
+) -> Any:
     prune_records_cache()
     etag = build_etag(payload)
-    _records_cache[cache_key] = (time.monotonic(), etag, payload)
-    prune_records_cache()
+    if token is None or user_id is None or token == get_cache_token(user_id):
+        _records_cache[cache_key] = (time.monotonic(), etag, payload)
+        prune_records_cache()
     response.headers["Cache-Control"] = "private, no-cache"
     response.headers["ETag"] = etag
     return payload
@@ -90,6 +106,7 @@ def prune_records_cache() -> None:
 
 
 def invalidate_records_cache(user_id: int) -> None:
+    _user_cache_versions[user_id] = _user_cache_versions.get(user_id, 0) + 1
     prefix = f"records:{user_id}:"
     for cache_key in list(_records_cache):
         if cache_key.startswith(prefix):
@@ -97,6 +114,8 @@ def invalidate_records_cache(user_id: int) -> None:
 
 
 def invalidate_all_records_cache() -> None:
+    global _global_cache_version
+    _global_cache_version += 1
     _records_cache.clear()
 
 
@@ -322,6 +341,7 @@ async def read_record_summaries(
     if cached is not None:
         return cached
 
+    token = get_cache_token(current_user.id)
     result = await db.execute(
         select(Record, Analysis)
         .outerjoin(Analysis, Analysis.recorder_id == Record.id)
@@ -336,7 +356,7 @@ async def read_record_summaries(
         serialize_record_summary(record, analysis, zones_by_record.get(record.id, []))
         for record, analysis in rows
     ]
-    return set_cached_payload(response, cache_key, payload)
+    return set_cached_payload(response, cache_key, payload, current_user.id, token)
 
 
 @router.get("/{record_id}/detail", response_model=RecordDetailRead)
@@ -352,6 +372,7 @@ async def read_record_detail(
     if cached is not None:
         return cached
 
+    token = get_cache_token(current_user.id)
     result = await db.execute(
         select(Record, Analysis)
         .outerjoin(Analysis, Analysis.recorder_id == Record.id)
@@ -391,7 +412,7 @@ async def read_record_detail(
         image_analyses,
         zones_by_record.get(record.id, []),
     )
-    return set_cached_payload(response, cache_key, payload)
+    return set_cached_payload(response, cache_key, payload, current_user.id, token)
 
 @router.get("/{record_id}", response_model=RecordRead)
 async def read_record(

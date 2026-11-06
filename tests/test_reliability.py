@@ -147,6 +147,44 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(list(records._records_cache), ["records:8:summary:0:100"])
         records._records_cache.clear()
 
+    def test_read_that_raced_with_an_invalidation_is_not_cached(self):
+        import routes.record as records
+        from fastapi import Response
+
+        records._records_cache.clear()
+        key = "records:5:summary:0:100"
+
+        token = records.get_cache_token(5)  # the request starts reading the old state...
+        records.invalidate_records_cache(5)  # ...the worker commits and the user's cache is invalidated...
+        records.set_cached_payload(Response(), key, [{"ibis_quantity": None}], 5, token)  # ...then it stores
+
+        self.assertNotIn(key, records._records_cache)
+
+    def test_read_without_a_concurrent_invalidation_is_cached(self):
+        import routes.record as records
+        from fastapi import Response
+
+        records._records_cache.clear()
+        key = "records:5:summary:0:100"
+        token = records.get_cache_token(5)
+        records.invalidate_records_cache(6)  # another user: does not affect this one
+        records.set_cached_payload(Response(), key, [], 5, token)
+
+        self.assertIn(key, records._records_cache)
+        records._records_cache.clear()
+
+    def test_global_invalidation_also_discards_in_flight_reads(self):
+        import routes.record as records
+        from fastapi import Response
+
+        records._records_cache.clear()
+        key = "records:5:detail:1"
+        token = records.get_cache_token(5)
+        records.invalidate_all_records_cache()
+        records.set_cached_payload(Response(), key, {}, 5, token)
+
+        self.assertNotIn(key, records._records_cache)
+
     def test_cache_headers_force_revalidation(self):
         import routes.record as records
         from fastapi import Response
