@@ -267,6 +267,9 @@ class AnalysisImageBase(SQLModel):
     image_url: str
     ibis_quantity: int
     raw_result: Optional[str] = None
+    # Pixel space of bbox_xyxy; null for analyses written before 20260610_0018.
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
 
 
 class AnalysisImageCreate(AnalysisImageBase):

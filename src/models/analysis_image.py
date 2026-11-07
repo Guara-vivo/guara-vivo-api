@@ -19,6 +19,8 @@ class AnalysisImage(SQLModel, table=True):
     image_url: str
     ibis_quantity: int
     raw_result: Optional[str] = Field(default=None, sa_column=Column(Text))
+    image_width: Optional[int] = Field(default=None)
+    image_height: Optional[int] = Field(default=None)
     created_at: DateTimeType = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     
     analysis: "Analysis" = Relationship(back_populates="image_analyses")
