@@ -158,6 +158,7 @@ python src/seed.py
 - `JWT_SECRET_KEY` is required before issuing or validating JWTs. Generate it with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 - `ADMIN_EMAIL` and `ADMIN_PASSWORD` configure the startup admin seed. If set, the API creates an admin user on first startup if no user exists. Both must be provided together or both omitted.
 - `JWT_ACCESS_TOKEN_EXPIRE` is optional and defaults to `3600` seconds.
+- `JWT_REFRESH_TOKEN_EXPIRE` is optional and defaults to `31536000` seconds (1 year), sliding: every refresh issues a new token with a fresh 1 year. It is long on purpose because the app works offline and a device can stay without network for months; clients must only drop the session when `POST /users/refresh` answers 401, never on network errors.
 - `CORS_ORIGINS` is optional and should be a comma-separated allowlist of frontend origins. If empty, CORS middleware is not enabled.
 - `MAX_REQUEST_BODY_BYTES` is optional and defaults to `10485760` (10MB). Enforced by ASGI middleware by reading the request stream.
 - `MAX_UPLOAD_FILE_BYTES` is optional and defaults to `5242880` (5MB) per uploaded image. Aggregate upload limit is 10MB per request.

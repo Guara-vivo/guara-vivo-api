@@ -134,7 +134,7 @@ jobs:
           require_secret RABBITMQ_DEFAULT_PASS
 
           : "${JWT_ACCESS_TOKEN_EXPIRE:=3600}"
-          : "${JWT_REFRESH_TOKEN_EXPIRE:=2592000}"
+          : "${JWT_REFRESH_TOKEN_EXPIRE:=31536000}"
           : "${APP_ENV:=production}"
           : "${RECORDS_CACHE_TTL_SECONDS:=30}"
           : "${MAX_REQUEST_BODY_BYTES:=10485760}"
