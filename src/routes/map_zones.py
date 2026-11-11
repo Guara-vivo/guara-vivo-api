@@ -16,6 +16,8 @@ from services.map_zone_service import (
 
 router = APIRouter(prefix="/map-zones", tags=["map-zones"])
 
+NEST_ZONE_TYPE = "nest"
+
 
 def serialize_map_zone_record(
     record: Record,
@@ -41,9 +43,12 @@ async def read_map_zones(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get all public map zones."""
+    """Get map zones. Nest positions are admin-only."""
+    statement = select(MapZone)
+    if not current_user.is_admin:
+        statement = statement.where(MapZone.type != NEST_ZONE_TYPE)
     result = await db.execute(
-        select(MapZone)
+        statement
         .order_by(MapZone.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -59,14 +64,17 @@ async def read_map_zone_records(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get records linked to a public map zone."""
+    """Get records linked to a map zone.
+
+    On a nest zone, non-admins only see their own records, and get 404 when they have none.
+    """
     zone_result = await db.execute(select(MapZone).where(MapZone.id == zone_id))
     zone = zone_result.scalar_one_or_none()
 
     if zone is None:
         raise HTTPException(status_code=404, detail="Zone not found")
 
-    records_result = await db.execute(
+    visible_records = (
         select(Record, Analysis, User)
         .join(RecordMapZone, RecordMapZone.record_id == Record.id)
         .join(User, User.id == Record.user_id)
@@ -76,6 +84,18 @@ async def read_map_zone_records(
             Record.status == "completed",
             Analysis.ibis_quantity > 0,
         )
+    )
+
+    if zone.type == NEST_ZONE_TYPE and not current_user.is_admin:
+        visible_records = visible_records.where(Record.user_id == current_user.id)
+        # Checked apart from the page so that paging past the end is not mistaken for "none".
+        has_own_record = await db.execute(select(visible_records.exists()))
+        if not has_own_record.scalar():
+            # Same answer as a missing zone: do not reveal that this nest exists.
+            raise HTTPException(status_code=404, detail="Zone not found")
+
+    records_result = await db.execute(
+        visible_records
         .order_by(Record.date_time.desc(), Record.id.desc())
         .offset(skip)
         .limit(limit)
