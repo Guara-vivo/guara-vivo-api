@@ -35,7 +35,12 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8001 --proxy-headers --forwarded-allow-ips='*'"
+    # Caddy runs on the host and reaches the published 127.0.0.1:8001 through the Docker bridge, so the API
+    # sees it as the network gateway (172.18.0.1 in prod). Trust X-Forwarded-For only from Docker's private
+    # ranges (172.16.0.0/12): it survives the network being recreated with another subnet, and an address from
+    # the internet can't forge it. Do not go back to '*': every client would be able to pick its own
+    # rate-limit key. If this is too narrow, every client shows up as the proxy and the limits become one counter.
+    command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8001 --proxy-headers --forwarded-allow-ips='172.16.0.0/12'"
     networks:
       - guara-vivo-network
 
