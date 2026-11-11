@@ -1,297 +1,111 @@
-# Guara Vivo API
+# Guará Vivo API
 
-API FastAPI para cadastro de usuários, registros de observação, análises e íbis. O projeto usa PostgreSQL, SQLAlchemy async, SQLModel, Alembic, JWT e bcrypt.
+API REST (FastAPI) do Guará Vivo. Cuida de cadastro e login de usuários, registros de avistamento (fotos + local), zonas do mapa e dos resultados da análise de IA.
 
-## Stack
+Quando o app cria um registro, a API salva as fotos no Supabase Storage, grava o registro no PostgreSQL e publica o `record_id` numa fila RabbitMQ. O [worker](https://github.com/Guara-vivo/guara-vivo-worker) consome a fila, chama o [identifier](https://github.com/Guara-vivo/guara-vivo-identifier) e grava o resultado de volta no banco.
 
-- Python 3
-- FastAPI
-- SQLModel / SQLAlchemy async
-- PostgreSQL
-- Alembic
-- JWT com `python-jose`
-- Senhas com `bcrypt`
-- Validação com Pydantic e `email-validator`
+```
+app mobile ──> API (:8001) ──> RabbitMQ ──> worker ──> identifier (:8000)
+                  │                           │
+                  └────── PostgreSQL (Supabase) <────┘
+```
 
-## Requisitos
+**Stack:** Python 3.12, FastAPI, SQLModel/SQLAlchemy async, PostgreSQL (Supabase), Alembic, JWT (PyJWT) + bcrypt, RabbitMQ (pika).
 
-- Python instalado
-- PostgreSQL disponível
-- `DATABASE_URL` apontando para PostgreSQL
-- `JWT_SECRET_KEY` configurado antes de usar login/JWT
+## O que você precisa antes
 
-SQLite não é suportado por padrão.
+- Python 3.12 (ou Docker, se for subir a stack completa)
+- Um banco **PostgreSQL** (hoje o time usa o Supabase; SQLite não é suportado)
+- Para enviar fotos: projeto Supabase com o bucket de Storage `frontend-uploads`
+- Para criar registros: um RabbitMQ acessível (veja abaixo)
 
-## Configuração
+## Opção 1: stack completa com Docker Compose
 
-Crie e ative o ambiente virtual:
+Sobe API, identifier, worker e RabbitMQ juntos. Os três repositórios precisam estar **lado a lado**, na mesma pasta:
+
+```
+guara-vivo/
+├── guara-vivo-api/
+├── guara-vivo-identifier/
+└── guara-vivo-worker/
+```
 
 ```bash
+cd guara-vivo-api
+cp .env.docker-compose.example .env.docker-compose   # no PowerShell: copy
+# edite .env.docker-compose: DATABASE_URL, JWT_SECRET_KEY, chaves do Supabase, senha do RabbitMQ...
+docker compose --env-file .env.docker-compose up --build
+```
+
+- API: http://localhost:8001 (documentação interativa em `/docs`)
+- RabbitMQ (painel): http://localhost:15672
+- As migrations rodam sozinhas antes da API subir.
+- O banco **não** sobe no Compose: use a `DATABASE_URL` do Supabase.
+- O build do identifier copia o arquivo `yolo11x-seg.pt`, que não está no Git. Coloque-o na raiz de `guara-vivo-identifier/` antes do build (veja o README dele).
+
+## Opção 2: só a API, em Python
+
+Bom para mexer no código da API. Para criar registros você ainda precisa de um RabbitMQ; o mais simples é um container:
+
+```bash
+docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management
+```
+
+Depois:
+
+```powershell
 python -m venv venv
-.\venv\Scripts\activate
-```
-
-Instale as dependências:
-
-```bash
+.\venv\Scripts\activate          # Linux/macOS: source venv/bin/activate
 pip install -r requirements.txt
+
+copy .env.example .env           # Linux/macOS: cp
 ```
 
-Crie o arquivo `.env`:
+Edite o `.env`. O mínimo para rodar é:
 
-```bash
-copy .env.example .env
-```
+| Variável | Para quê |
+| --- | --- |
+| `DATABASE_URL` | Conexão PostgreSQL (`postgresql://usuario:senha@host:5432/banco`) |
+| `JWT_SECRET_KEY` | Segredo dos tokens. Gere com `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `RABBITMQ_HOST` | Use `localhost` ao rodar fora do Docker (o exemplo vem com `rabbitmq`) |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Opcionais: criam o usuário admin na primeira subida (os dois juntos) |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Necessárias só para upload de fotos |
 
-Configure as variáveis:
+Aplique as migrations e suba a API:
 
-```env
-DATABASE_URL=postgresql://username:password@localhost:5432/mydatabase
-JWT_SECRET_KEY=replace-with-a-secure-random-secret
-JWT_ACCESS_TOKEN_EXPIRE=3600
-CORS_ORIGINS=http://localhost:3000,http://localhost:5173
-MAX_REQUEST_BODY_BYTES=1048576
-DATABASE_POOL_SIZE=5
-DATABASE_MAX_OVERFLOW=10
-DATABASE_POOL_TIMEOUT=30
-DATABASE_POOL_RECYCLE=1800
-```
-
-Para gerar um secret seguro:
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-## Banco De Dados
-
-Aplicar migrations:
-
-```bash
+```powershell
 alembic upgrade head
-```
-
-Ver migration atual:
-
-```bash
-alembic current
-```
-
-O head atual esperado é `20260520_0008`.
-
-O app não cria tabelas automaticamente no startup. Toda alteração persistente de schema deve ser feita via Alembic.
-
-## Execução
-
-Rodar em modo local:
-
-```bash
 python src/main.py
-```
-
-Ou com Uvicorn:
-
-```bash
+# ou, com reload automático:
 uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-URL padrão:
+(`python src/main.py` já escuta em `0.0.0.0`, o que permite que um celular na mesma rede acesse a API.)
 
-```text
-http://localhost:8001
+Pronto: http://localhost:8001/docs (a documentação some se `APP_ENV=production`). Para checar que está de pé: `GET /health`.
+
+## Testes
+
+Não precisam de banco nem de RabbitMQ de verdade.
+
+```powershell
+pip install pytest
+$env:DATABASE_URL = "postgresql://user:password@localhost:5432/test"   # Linux/macOS: export
+$env:JWT_SECRET_KEY = "teste-local"
+python -m pytest -q
 ```
 
-Swagger:
+## Estrutura
 
-```text
-http://localhost:8001/docs
+```
+src/          código da API (routes/, models/, services/, schemas.py, main.py)
+migrations/   migrations do Alembic
+tests/        testes (pytest)
+docs/         documentação de referência
 ```
 
-## Usuário Admin Inicial
+Mudou um model? Gere a migration com `alembic revision --autogenerate -m "descricao"`, revise o arquivo gerado e aplique com `alembic upgrade head`.
 
-No startup, se as variáveis `ADMIN_EMAIL` e `ADMIN_PASSWORD` forem configuradas e nenhum admin existir, a API cria um usuário admin automaticamente:
+## Mais detalhes
 
-```env
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=replace-with-secure-password
-```
-
-Se essas variáveis não forem definidas, nenhum admin é criado no startup. O primeiro usuário deve ser criado manualmente via SQL ou via API após uma migração manual.
-
-A senha é sempre armazenada como hash bcrypt, nunca em texto plano.
-
-## Autenticação
-
-Login:
-
-```http
-POST /users/login
-```
-
-Body:
-
-```json
-{
-  "email": "admin@example.com",
-  "password": "your-configured-password"
-}
-```
-
-Resposta:
-
-```json
-{
-  "access_token": "jwt-token",
-  "token_type": "bearer",
-  "user": {
-    "id": 1,
-    "name": "admin",
-    "email": "admin@example.com"
-  }
-}
-```
-
-Use o token em rotas protegidas:
-
-```http
-Authorization: Bearer <access_token>
-```
-
-Validar sessão atual:
-
-```http
-GET /users/me
-```
-
-Tokens expiram em 1 hora por padrão (`JWT_ACCESS_TOKEN_EXPIRE=3600`).
-
-## Endpoints
-
-### Users
-
-- `POST /users/` cria usuário com senha obrigatória.
-- `POST /users/login` autentica e retorna JWT.
-- `GET /users/me` retorna usuário autenticado.
-- `GET /users/{id}` exige JWT e só permite acessar o próprio usuário.
-- `PUT /users/{id}` exige JWT e só permite atualizar o próprio usuário.
-- `DELETE /users/{id}` exige JWT e só permite remover o próprio usuário.
-
-### Records
-
-- `GET /records/` lista registros com paginação.
-- `GET /records/{id}` retorna um registro.
-- `POST /records/` exige JWT e `user_id` igual ao usuário autenticado.
-- `PUT /records/{id}` exige JWT e ownership.
-- `DELETE /records/{id}` exige JWT e ownership.
-
-### Analysis
-
-- `GET /analysis/` lista análises com paginação.
-- `GET /analysis/{id}` retorna uma análise.
-- `POST /analysis/` exige JWT e ownership do record relacionado.
-- `PUT /analysis/{id}` exige JWT e ownership do record relacionado.
-- `DELETE /analysis/{id}` exige JWT e ownership do record relacionado.
-
-### Ibis
-
-- `GET /ibis/` lista íbis com paginação.
-- `GET /ibis/{id}` retorna um íbis.
-- `POST /ibis/` exige JWT e ownership pela análise/record relacionado.
-- `PUT /ibis/{id}` exige JWT e ownership pela análise/record relacionado.
-- `DELETE /ibis/{id}` exige JWT e ownership pela análise/record relacionado.
-
-## Paginação
-
-List endpoints aceitam:
-
-```text
-skip=0
-limit=100
-```
-
-Limites:
-
-- `skip >= 0`
-- `1 <= limit <= 100`
-
-Exemplo:
-
-```http
-GET /records/?skip=0&limit=50
-```
-
-## Segurança E Hardening
-
-- Senhas são obrigatórias e armazenadas somente com bcrypt.
-- `UserRead` não expõe `password`.
-- Emails são validados com `EmailStr`, normalizados para lowercase e únicos no banco.
-- Login tem rate limit simples em memória: 5 tentativas por IP a cada 60 segundos.
-- CORS só é habilitado quando `CORS_ORIGINS` é configurado.
-- Requests `POST`, `PUT` e `PATCH` com body devem usar `Content-Type: application/json`.
-- Payloads acima de `MAX_REQUEST_BODY_BYTES` (default 10MB) são rejeitados pelo middleware ASGI.
-- Rotas de escrita validam ownership antes de alterar dados relacionados.
-- `JWT_SECRET_KEY` é obrigatório para emitir e validar tokens.
-- Refresh tokens são single-use: validação, revogação e emissão ocorrem atomicamente com lock pessimista.
-- Upload de imagens é validado por assinatura binária (magic bytes), não apenas pelo header `Content-Type`.
-- Uploads suportam apenas JPEG, PNG e WebP.
-- Limite agregado de upload: 10MB por request.
-- Acesso a recursos de usuário não existentes ou não autorizados retorna `404` (não `403`), prevenindo enumeração.
-
-Observação: o rate limit atual é por processo e em memória. Antes de escalar horizontalmente, substitua por Redis ou outro storage compartilhado.
-
-## Performance
-
-- SQLAlchemy async usa `pool_pre_ping=True`.
-- Pool do banco é configurável por env.
-- Índices atuais cobrem `users.email`, `records.user_id` e `ibis.analysis_id`.
-- Listagens têm paginação limitada.
-- Startup faz apenas seed mínimo do admin, sem criar dados de exemplo automaticamente.
-- Upload é processado sequencialmente por arquivo para reduzir pico de memória.
-
-## Migrations Atuais
-
-Cadeia atual (head: `20260520_0008`):
-
-```text
-20260516_0001 -> 20260517_0002 -> d3a87201af95 -> 269cbb5d99ef -> 20260517_0003
-    -> 20260517_0004 -> 20260517_0005 -> 20260518_0006 -> 20260518_0007
-    -> 20260520_0008
-```
-
-Resumo:
-
-- `20260516_0001_initial_schema.py` cria schema inicial.
-- `20260517_0002_remove_analysis_unused_fields.py` remove campos não usados de `analyses`.
-- `d3a87201af95_add_status_column_to_records_table.py` adiciona `records.status` (idempotent).
-- `269cbb5d99ef_add_password_column_to_users_table.py` adiciona `users.password`.
-- `20260517_0003_add_security_performance_indexes.py` adiciona índices de segurança/performance.
-- `20260517_0004_fix_records_images_array_type.py` corrige `records.images` para `varchar[]`.
-- `20260517_0005_add_unique_constraint_to_analyses_recorder_id.py` adiciona constraint único em `analyses.recorder_id`.
-- `20260518_0006_make_datetimes_timezone_aware.py` converte datetime columns para timezone-aware (UTC).
-- `20260518_0007_add_refresh_tokens.py` cria tabela `refresh_tokens` para JWT rotation.
-- `20260520_0008_add_per_image_analysis.py` cria `analysis_images` e adiciona `ibis.analysis_image_id`.
-
-## Testes E Verificação
-
-Ainda não há suíte de testes no repositório.
-
-Verificar sintaxe/imports básicos:
-
-```bash
-python -m compileall src migrations
-```
-
-Verificar Alembic:
-
-```bash
-alembic heads
-alembic current
-```
-
-## Observações De Desenvolvimento
-
-- Não commitar `.env` nem credenciais reais.
-- Não habilitar `echo=True` no SQLAlchemy em execução normal.
-- Não reintroduzir SQLite como fallback sem decisão explícita.
-- Não usar `SQLModel.metadata.create_all()` no startup.
-- Toda alteração de schema deve ter migration Alembic.
+Endpoints, autenticação, paginação, segurança, performance e histórico de migrations estão em [`docs/REFERENCIA.md`](docs/REFERENCIA.md).
