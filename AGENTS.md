@@ -124,7 +124,7 @@ python src/seed.py
 - `/records/{id}/detail` - GET protected detail endpoint returning the record, aggregate analysis, `ibis`, and ordered `image_analyses` for the authenticated owner
 - `/analysis` - read-only (GET); analyses are written only by the worker
 - `/ibis` - read-only (GET); detections are written only by the worker
-- `/map-zones` - GET list; `GET /map-zones/{zone_id}/records` lists the records linked to a zone; POST/DELETE require `users.is_admin`; non-admins get 404 (zone logic in `src/services/map_zone_service.py`)
+- `/map-zones` - GET list; `GET /map-zones/{zone_id}/records` lists the records linked to a zone; POST/DELETE require `users.is_admin`; non-admins get 404 (zone logic in `src/services/map_zone_service.py`). Nest zones (`type="nest"`) are admin-only: the list hides them from non-admins, and on a nest `GET /{zone_id}/records` returns non-admins only their own records (404, same as a missing zone, when they have none). Feeding zones are visible to every logged-in user.
 - List endpoints for `records`, `analysis`, and `ibis` support bounded `skip` and `limit` query params. Default: `skip=0&limit=100`, max `limit=100`.
 
 ## Authentication
@@ -238,7 +238,7 @@ python src/seed.py
 
 ## Testing
 
-Tests live in `tests/` and run with `pytest` (also in CI before deploy). Files: `test_http_smoke.py` (real ASGI stack), `test_record_client_uuid.py`, `test_record_delete_cascade.py`, `test_reliability.py` (publish, requeue, cache races, listener), `test_review_fixes.py`, `test_scale_and_ops.py`, `test_security_hardening.py`. Add new tests there.
+Tests live in `tests/` and run with `pytest` (also in CI before deploy). Files: `test_http_smoke.py` (real ASGI stack), `test_nest_zone_visibility.py` (HTTP + real JWT against a throwaway SQLite file; needs `aiosqlite`, installed by CI: `pip install aiosqlite`), `test_record_client_uuid.py`, `test_record_delete_cascade.py`, `test_reliability.py` (publish, requeue, cache races, listener), `test_review_fixes.py`, `test_scale_and_ops.py`, `test_security_hardening.py`. Add new tests there.
 
 ## Notes
 
