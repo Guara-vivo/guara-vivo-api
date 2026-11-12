@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 from database import get_db
 from models import RefreshToken, User
-from schemas import LogoutRequest, RefreshTokenRequest, Token, UserCreate, UserLogin, UserRead, UserUpdate, WebToken
+from schemas import LogoutRequest, RefreshTokenRequest, Token, UserLogin, UserRead, UserUpdate, WebToken
 from ratelimit import RateLimiter
 from refresh_cookie import REFRESH_COOKIE_NAME, clear_refresh_cookie, reject_foreign_origin, set_refresh_cookie
 from security import (
@@ -27,7 +27,6 @@ router = APIRouter(prefix="/users", tags=["users"])
 # enough that spamming a victim's email only locks them out briefly.
 login_ip_limiter = RateLimiter(max_attempts=5, window_seconds=60)
 login_email_limiter = RateLimiter(max_attempts=10, window_seconds=600)
-register_ip_limiter = RateLimiter(max_attempts=20, window_seconds=3600)
 refresh_ip_limiter = RateLimiter(max_attempts=30, window_seconds=60)
 
 
@@ -330,20 +329,8 @@ async def read_user(
     
     return user
 
-@router.post("/", response_model=UserRead)
-async def create_user(user: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
-    enforce_rate_limit(register_ip_limiter, get_client_key(request))
-    existing_user = await get_user_by_email(db, str(user.email))
-    if existing_user is not None:
-        raise HTTPException(status_code=409, detail="Email already registered")
-
-    db_user = User(name=user.name, email=str(user.email), password=hash_password(user.password))
-
-    db.add(db_user)
-    await db.commit()
-    await db.refresh(db_user)
-
-    return db_user
+# There is no POST /users/ on purpose (Guara-vivo/documents#56): public sign-up is closed and
+# accounts are created directly in the database. If it comes back, it must not be public.
 
 @router.put("/{user_id}", response_model=UserRead)
 async def update_user(
