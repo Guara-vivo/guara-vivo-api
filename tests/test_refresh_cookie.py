@@ -268,6 +268,47 @@ class RefreshTests(CookieSessionTestCase):
         self.assertLess(abs(self.expires_in_seconds(self.last_token_row()) - 31536000), 10)
         self.assertEqual(self.refresh(body={"refresh_token": old}).status_code, 401)
 
+    def test_token_row_created_before_the_migration_refreshes_as_mobile(self):
+        # Rows from before migration 0019 have no session_kind: the column default makes them mobile.
+        from sqlalchemy import text
+
+        old = self.mobile_login_token()
+        row = self.last_token_row()
+        with Session(self.sync_engine) as session:
+            session.execute(text("DELETE FROM refresh_tokens WHERE id = :id"), {"id": row.id})
+            session.execute(
+                text(
+                    "INSERT INTO refresh_tokens (id, user_id, token_hash, jti, expires_at, created_at) "
+                    "VALUES (:id, :user_id, :token_hash, :jti, :expires_at, :created_at)"
+                ),
+                {
+                    "id": row.id,
+                    "user_id": row.user_id,
+                    "token_hash": row.token_hash,
+                    "jti": row.jti,
+                    "expires_at": row.expires_at,
+                    "created_at": row.created_at,
+                },
+            )
+            session.commit()
+        self.assertEqual(self.last_token_row().session_kind, "mobile")
+
+        response = self.refresh(body={"refresh_token": old})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(_set_cookie_header(response))
+        self.assertTrue(response.json()["refresh_token"])
+        self.assertEqual(self.last_token_row().session_kind, "mobile")
+
+    def test_null_body_refresh_token_falls_back_to_the_cookie(self):
+        cookie = self.web_login_cookie(remember=True)
+
+        response = self.refresh(cookie=cookie, body={"refresh_token": None})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("refresh_token", response.json())
+        self.assertIsNotNone(_set_cookie_header(response))
+
     def test_body_wins_over_cookie(self):
         alice_cookie = self.web_login_cookie(remember=True)
         bob_token = self.mobile_login_token(email=BOB_EMAIL, password=BOB_PASSWORD)
