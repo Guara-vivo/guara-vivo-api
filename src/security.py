@@ -19,8 +19,27 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE", "3600"))
 JWT_REFRESH_TOKEN_EXPIRE = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE", "31536000"))
+JWT_WEB_REFRESH_TOKEN_EXPIRE = int(os.getenv("JWT_WEB_REFRESH_TOKEN_EXPIRE", "604800"))
+JWT_WEB_SESSION_REFRESH_TOKEN_EXPIRE = int(os.getenv("JWT_WEB_SESSION_REFRESH_TOKEN_EXPIRE", "86400"))
+
+# Refresh-token session kinds. mobile: long-lived, token in the response body (the app works offline
+# for months). web / web_session: the panel, token only in an HttpOnly cookie ("remember me" / not).
+SESSION_KIND_MOBILE = "mobile"
+SESSION_KIND_WEB = "web"
+SESSION_KIND_WEB_SESSION = "web_session"
+WEB_SESSION_KINDS = (SESSION_KIND_WEB, SESSION_KIND_WEB_SESSION)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/users/login")
+
+
+def refresh_ttl_seconds(kind: str) -> int:
+    if kind == SESSION_KIND_MOBILE:
+        return JWT_REFRESH_TOKEN_EXPIRE
+    if kind == SESSION_KIND_WEB:
+        return JWT_WEB_REFRESH_TOKEN_EXPIRE
+    if kind == SESSION_KIND_WEB_SESSION:
+        return JWT_WEB_SESSION_REFRESH_TOKEN_EXPIRE
+    raise ValueError(f"unknown session kind: {kind!r}")
 
 
 def create_access_token(user: User) -> str:
@@ -39,10 +58,10 @@ def create_access_token(user: User) -> str:
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 
-def create_refresh_token() -> tuple[str, str, datetime]:
+def create_refresh_token(kind: str = SESSION_KIND_MOBILE) -> tuple[str, str, datetime]:
     token = secrets.token_urlsafe(64)
     jti = uuid4().hex
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=JWT_REFRESH_TOKEN_EXPIRE)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=refresh_ttl_seconds(kind))
     return token, jti, expires_at
 
 
