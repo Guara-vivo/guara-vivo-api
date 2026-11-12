@@ -9,7 +9,7 @@ from database import get_db
 from models import RefreshToken, User
 from schemas import LogoutRequest, RefreshTokenRequest, Token, UserCreate, UserLogin, UserRead, UserUpdate, WebToken
 from ratelimit import RateLimiter
-from refresh_cookie import set_refresh_cookie
+from refresh_cookie import REFRESH_COOKIE_NAME, clear_refresh_cookie, reject_foreign_origin, set_refresh_cookie
 from security import (
     SESSION_KIND_MOBILE,
     SESSION_KIND_WEB,
@@ -137,12 +137,16 @@ async def validate_and_rotate_refresh_token_atomically(
     db: AsyncSession,
     refresh_token: str,
     request: Request,
-) -> tuple[User, str, RefreshToken]:
+    new_kind: str | None = None,
+) -> tuple[User, str, str, str]:
     """
     Atomically validate, rotate, and revoke refresh token.
     Uses pessimistic locking to prevent race conditions.
-    
-    Returns: (user, new_access_token, new_refresh_token_string)
+
+    The new token inherits the session kind of the one it replaces, unless `new_kind` says otherwise
+    (used once to move a panel session from localStorage to the cookie).
+
+    Returns: (user, new_access_token, new_refresh_token_string, new_session_kind)
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -178,13 +182,14 @@ async def validate_and_rotate_refresh_token_atomically(
             raise credentials_exception
         
         # Create new token
-        new_refresh_token, new_db_token = await create_db_refresh_token(db, db_user, request)
-        
+        session_kind = new_kind or db_token.session_kind
+        new_refresh_token, new_db_token = await create_db_refresh_token(db, db_user, request, session_kind)
+
         # Revoke the old token in the same transaction
         db_token.revoked_at = datetime.now(timezone.utc)
         db_token.replaced_by_token_id = new_db_token.id
-        
-        return db_user, create_access_token(db_user), new_refresh_token
+
+        return db_user, create_access_token(db_user), new_refresh_token, session_kind
 
 
 @router.post("/login", response_model=Token)
@@ -224,17 +229,46 @@ async def login(
     }
 
 
+def read_refresh_source(request: Request, body_token: str | None) -> tuple[str | None, bool]:
+    """The refresh token and whether it came from the cookie. The body wins when both are present."""
+    if body_token is not None:
+        return body_token, False
+    return request.cookies.get(REFRESH_COOKIE_NAME), True
+
+
 @router.post("/refresh", response_model=Token)
 async def refresh_token(
-    payload: RefreshTokenRequest,
     request: Request,
+    payload: RefreshTokenRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     enforce_rate_limit(refresh_ip_limiter, get_client_key(request))
-    db_user, access_token, refresh_token_str = await validate_and_rotate_refresh_token_atomically(
-        db, payload.refresh_token, request
-    )
+    payload = payload or RefreshTokenRequest()
+    token, from_cookie = read_refresh_source(request, payload.refresh_token)
+    if token is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate refresh token")
+    if from_cookie:
+        reject_foreign_origin(request)
+
+    new_kind = None
+    if not from_cookie and payload.client == "web":
+        new_kind = SESSION_KIND_WEB if payload.remember else SESSION_KIND_WEB_SESSION
+
+    try:
+        db_user, access_token, refresh_token_str, session_kind = await validate_and_rotate_refresh_token_atomically(
+            db, token, request, new_kind
+        )
+    except HTTPException as exc:
+        if from_cookie and exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            # Do not leave a dead cookie behind for the browser to keep sending.
+            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            clear_refresh_cookie(response)
+            return response
+        raise
     await db.commit()
+
+    if session_kind in WEB_SESSION_KINDS:
+        return web_session_response(db_user, access_token, refresh_token_str, session_kind)
 
     return {
         "access_token": access_token,

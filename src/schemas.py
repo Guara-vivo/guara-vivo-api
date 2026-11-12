@@ -92,7 +92,12 @@ class WebToken(SQLModel):
 
 
 class RefreshTokenRequest(SQLModel):
-    refresh_token: str = Field(min_length=1)
+    # Mobile sends the token here. The panel sends none: it comes from the HttpOnly cookie.
+    refresh_token: Optional[str] = Field(default=None, min_length=1)
+    # Only meaningful together with a body token: the panel uses it once to move a session it kept in
+    # localStorage over to the cookie. Cookie tokens keep the kind they already have.
+    client: Optional[Literal["web", "mobile"]] = None
+    remember: bool = False
 
 
 class LogoutRequest(SQLModel):

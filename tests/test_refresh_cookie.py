@@ -115,6 +115,31 @@ class CookieSessionTestCase(unittest.TestCase):
     def login(self, email=ALICE_EMAIL, password=ALICE_PASSWORD, **extra):
         return self.client.post("/users/login", json={"email": email, "password": password, **extra})
 
+    def refresh(self, cookie: str | None = None, body: dict | None = None, origin: str | None = None):
+        headers = {}
+        if cookie is not None:
+            headers["Cookie"] = f"{COOKIE}={cookie}"
+        if origin is not None:
+            headers["Origin"] = origin
+        return self.client.post("/users/refresh", json=body, headers=headers)
+
+    def web_login_cookie(self, remember: bool = True, **who) -> str:
+        return _cookie_value(self.login(client="web", remember=remember, **who))
+
+    def mobile_login_token(self, **who) -> str:
+        return self.login(**who).json()["refresh_token"]
+
+    def update_token_rows(self, token_value: str, **changes) -> None:
+        from security import hash_refresh_token
+
+        with Session(self.sync_engine) as session:
+            row = session.execute(
+                select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(token_value))
+            ).scalar_one()
+            for name, value in changes.items():
+                setattr(row, name, value)
+            session.commit()
+
     def last_token_row(self, user_id: int = ALICE) -> RefreshToken:
         with Session(self.sync_engine) as session:
             return session.execute(
@@ -194,6 +219,157 @@ class WebLoginTests(CookieSessionTestCase):
         response = self.login(client="desktop")
 
         self.assertEqual(response.status_code, 422)
+
+
+FOREIGN_ORIGINS = (
+    "https://evil.example",
+    "https://api.guaravivo.com.br",
+    "http://guaravivo.com.br",
+    "https://guaravivo.com.br:8443",
+    "null",
+)
+
+
+class RefreshTests(CookieSessionTestCase):
+    def test_refresh_by_cookie_rotates_and_resets_cookie(self):
+        old = self.web_login_cookie(remember=True)
+
+        response = self.refresh(cookie=old)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("refresh_token", response.json())
+        self.assertTrue(response.json()["access_token"])
+        header = _set_cookie_header(response)
+        self.assertIsNotNone(header)
+        self.assertIn("Max-Age=604800", header)
+        self.assertNotEqual(_cookie_value(response), old)
+        self.assertEqual(self.refresh(cookie=old).status_code, 401)  # rotated: the old one is revoked
+
+    def test_refresh_inherits_web_session_kind(self):
+        old = self.web_login_cookie(remember=False)
+
+        response = self.refresh(cookie=old)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Max-Age", _set_cookie_header(response))
+        self.assertEqual(self.last_token_row().session_kind, "web_session")
+
+    def test_mobile_refresh_by_body_unchanged(self):
+        old = self.mobile_login_token()
+
+        response = self.refresh(body={"refresh_token": old})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(_set_cookie_header(response))
+        body = response.json()
+        self.assertTrue(body["refresh_token"])
+        self.assertNotEqual(body["refresh_token"], old)
+        self.assertEqual(self.last_token_row().session_kind, "mobile")
+        self.assertLess(abs(self.expires_in_seconds(self.last_token_row()) - 31536000), 10)
+        self.assertEqual(self.refresh(body={"refresh_token": old}).status_code, 401)
+
+    def test_body_wins_over_cookie(self):
+        alice_cookie = self.web_login_cookie(remember=True)
+        bob_token = self.mobile_login_token(email=BOB_EMAIL, password=BOB_PASSWORD)
+
+        response = self.refresh(cookie=alice_cookie, body={"refresh_token": bob_token})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["user"]["email"], BOB_EMAIL)
+        self.assertIsNone(_set_cookie_header(response))  # kind comes from the body token (mobile)
+        self.assertEqual(self.refresh(cookie=alice_cookie).status_code, 200)  # the cookie was not consumed
+
+    def test_body_token_with_client_web_migrates_to_cookie(self):
+        for remember, kind in ((True, "web"), (False, "web_session")):
+            with self.subTest(remember=remember):
+                old = self.mobile_login_token()
+
+                response = self.refresh(body={"refresh_token": old, "client": "web", "remember": remember})
+
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("refresh_token", response.json())
+                header = _set_cookie_header(response)
+                self.assertIsNotNone(header)
+                self.assertEqual("Max-Age" in header, remember)
+                self.assertEqual(self.last_token_row().session_kind, kind)
+
+    def test_remember_in_body_does_not_change_a_cookie_token(self):
+        old = self.web_login_cookie(remember=False)
+
+        response = self.refresh(cookie=old, body={"client": "web", "remember": True})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.last_token_row().session_kind, "web_session")
+
+    def test_foreign_origin_with_cookie_is_403_and_does_not_rotate(self):
+        cookie = self.web_login_cookie()
+        for origin in FOREIGN_ORIGINS:
+            with self.subTest(origin=origin):
+                response = self.refresh(cookie=cookie, origin=origin)
+                self.assertEqual(response.status_code, 403)
+                self.assertIsNone(_set_cookie_header(response))
+        self.assertEqual(self.refresh(cookie=cookie, origin=PANEL_ORIGIN).status_code, 200)  # still valid
+
+    def test_missing_origin_with_cookie_is_accepted(self):
+        self.assertEqual(self.refresh(cookie=self.web_login_cookie()).status_code, 200)
+
+    def test_foreign_origin_with_body_token_is_accepted(self):
+        old = self.mobile_login_token()
+
+        response = self.refresh(body={"refresh_token": old}, origin="https://evil.example")
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_invalid_cookie_is_401_and_expires_cookie(self):
+        revoked = self.web_login_cookie()
+        self.update_token_rows(revoked, revoked_at=datetime.now(timezone.utc))
+        expired = self.web_login_cookie()
+        self.update_token_rows(expired, expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+
+        for label, value in (("unknown", "not-a-real-token"), ("revoked", revoked), ("expired", expired)):
+            with self.subTest(case=label):
+                response = self.refresh(cookie=value)
+                self.assertEqual(response.status_code, 401)
+                header = _set_cookie_header(response)
+                self.assertIsNotNone(header)
+                self.assertIn("Max-Age=0", header)
+
+    def test_invalid_body_token_is_401_and_does_not_touch_the_cookie(self):
+        response = self.refresh(body={"refresh_token": "not-a-real-token"})
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIsNone(_set_cookie_header(response))
+
+    def test_no_token_at_all_is_401(self):
+        self.assertEqual(self.refresh().status_code, 401)
+        self.assertEqual(self.refresh(body={}).status_code, 401)
+
+    def test_empty_body_refresh_token_is_422(self):
+        self.assertEqual(self.refresh(body={"refresh_token": ""}).status_code, 422)
+
+    def test_password_change_revokes_web_tokens(self):
+        login = self.login(client="web", remember=True)
+        cookie, access = _cookie_value(login), login.json()["access_token"]
+
+        updated = self.client.put(
+            f"/users/{ALICE}",
+            headers={"Authorization": f"Bearer {access}"},
+            json={
+                "name": "Alice",
+                "email": ALICE_EMAIL,
+                "current_password": ALICE_PASSWORD,
+                "password": "alice-new-horse-1",
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+        try:
+            self.assertEqual(self.refresh(cookie=cookie).status_code, 401)
+        finally:
+            # Put the original password back so the other tests keep working.
+            with Session(self.sync_engine) as session:
+                user = session.get(User, ALICE)
+                user.password = user_routes.hash_password(ALICE_PASSWORD)
+                session.commit()
 
 
 if __name__ == "__main__":
