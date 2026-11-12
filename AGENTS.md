@@ -61,7 +61,7 @@ python src/main.py
 - Apply migrations with `alembic upgrade head` before starting the API.
 - Create a migration after model changes with `alembic revision --autogenerate -m "message"`, then review the generated file before applying it.
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
-- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007` -> `20260520_0008` -> `20260526_0009` -> `20260603_0010` -> `20260604_0011` -> `20260605_0012` -> `20260606_0013` -> `20260606_0014` -> `20260607_0015` -> `20260608_0016` -> `20260609_0017` -> `20260610_0018` (head).
+- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007` -> `20260520_0008` -> `20260526_0009` -> `20260603_0010` -> `20260604_0011` -> `20260605_0012` -> `20260606_0013` -> `20260606_0014` -> `20260607_0015` -> `20260608_0016` -> `20260609_0017` -> `20260610_0018` -> `20261112_0019` (head).
 - `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
 - `d3a87201af95_add_status_column_to_records_table.py` adds `records.status` with idempotent logic to handle both initial schema creation and migration scenarios. Backfills existing rows to `pending` and makes the column `NOT NULL`.
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
@@ -81,6 +81,7 @@ python src/main.py
 - `20260608_0016_add_record_queued_at.py` adds `records.queued_at` (default now) plus partial index `ix_records_pending_queued_at` on pending rows, used by `src/requeue.py`.
 - `20260609_0017_add_analysis_status_and_warnings.py` adds nullable `analyses.status_analise` (`ok|atencao|sem_ave|sem_guara`) and `analyses.avisos` (`varchar[]` of warning codes) from the identifier's root response. The worker must write them; `AnalysisRead` exposes them. The API returns codes only; user-facing text belongs to the frontend. `ibis.color`/`age_group` are free strings, so the identifier's `indefinido` is accepted as is; per-guará `status_analise`/`avisos` live in `ibis.raw_detection`.
 - `20260610_0018_add_analysis_image_dimensions.py` adds nullable `analysis_images.image_width`/`image_height` (pixel space of `bbox_xyxy`, from the identifier's per-image `image_width`/`image_height`). `AnalysisImageRead` exposes them; null for older rows. Run the migration before deploying the worker (it inserts the columns). `scripts/backfill_image_dimensions.py <record_ids> [--apply]` fills old records.
+- `20261112_0019_add_refresh_token_session_kind.py` adds `refresh_tokens.session_kind` (`varchar(16)`, `NOT NULL`, server default `mobile`), so existing tokens count as mobile sessions (PostgreSQL only, like the other recent revisions).
 - If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
 - Alembic remains synchronous and reads `DATABASE_URL` from process env or `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
@@ -134,7 +135,7 @@ python src/seed.py
 - Use `bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")` for hashing and `bcrypt.checkpw()` for verification.
 - `src/routes/user.py` owns password hashing, password verification, user creation/update, and login.
 - `src/security.py` owns JWT access-token creation, refresh-token management, and current-user validation.
-- Login returns a JWT access token with `token_type="bearer"`, a refresh token, and the authenticated `UserRead` payload.
+- Login returns a JWT access token with `token_type="bearer"` and the authenticated `UserRead` payload. For the mobile app (default) it also returns the refresh token in the body; for the panel (`client="web"`) the refresh token goes only in the cookie (see the session kinds below).
 - Auth endpoints are rate limited per process by `src/ratelimit.py` (limits listed in Hardening Notes).
 - JWT access token payload includes `sub` as the user id, `email`, `type="access"`, `iat`, and `exp`.
 - JWT refresh token payload includes `sub` as the user id, `type="refresh"`, `jti` (unique token identifier), `iat`, and `exp`.
@@ -151,8 +152,8 @@ python src/seed.py
 - Record, analysis, and ibis read endpoints require JWT and must return only resources owned by the authenticated user.
 - Record writes require JWT and `record.user_id` must match the authenticated user.
 - Analysis and ibis writes require JWT and ownership through the associated record.
-- Frontends should persist both `access_token` and `refresh_token` and send `Authorization: Bearer <access_token>` on protected requests.
-- Frontends can call `GET /users/me` to validate an existing session or `POST /users/refresh` to obtain a new access token before expiration.
+- The mobile app persists both `access_token` and `refresh_token` (it gets the latter in the body). The panel keeps `access_token` only in memory; its refresh token is the `gv_refresh` HttpOnly cookie and must never be stored where JavaScript can read it. Both send `Authorization: Bearer <access_token>` on protected requests.
+- Clients can call `GET /users/me` to validate an existing session or `POST /users/refresh` to obtain a new access token before expiration. The panel calls it with `credentials: 'include'` and an empty body.
 - Optional user metadata (user_agent, ip_address) is captured on token issuance for security auditing.
 
 ## Environment
@@ -201,7 +202,7 @@ python src/seed.py
 - `Analysis.recorder_id` is a unique foreign key to `records.id`, representing a one-to-one relationship between a record and its analysis.
 - `AnalysisImage` stores per-image inference metadata: `analysis_id`, `record_id`, `image_index`, `image_url`, `ibis_quantity`, `raw_result`, and `created_at`.
 - `Ibis.analysis_image_id` links a detection to the image that produced it. `Ibis.raw_detection` stores the raw identifier result for frontend technical details.
-- `RefreshToken` persists refresh tokens with `token_hash`, `jti`, `expires_at`, `revoked_at`, `created_at`, `replaced_by_token_id`, `user_agent`, and `ip_address` for rotation and audit tracking.
+- `RefreshToken` persists refresh tokens with `token_hash`, `jti`, `expires_at`, `revoked_at`, `created_at`, `replaced_by_token_id`, `user_agent`, and `ip_address` for rotation and audit tracking, plus `session_kind` (`mobile` default, `web`, `web_session`), which rotation inherits.
 - All datetime columns (`analyses.datetime`, `ibis.datetime`, `records.created_at`, `refresh_tokens.created_at/expires_at/revoked_at`) use `DateTime(timezone=True)` for UTC consistency.
 - Table models live under `src/models/` and should be used for persistence only.
 - Request/response schemas live in `src/schemas.py`.
@@ -245,7 +246,7 @@ python src/seed.py
 
 ## Testing
 
-Tests live in `tests/` and run with `pytest` (also in CI before deploy). Files: `test_http_smoke.py` (real ASGI stack), `test_nest_zone_visibility.py` (HTTP + real JWT against a throwaway SQLite file; needs `aiosqlite`, installed by CI: `pip install aiosqlite`), `test_record_client_uuid.py`, `test_record_delete_cascade.py`, `test_reliability.py` (publish, requeue, cache races, listener), `test_review_fixes.py`, `test_scale_and_ops.py`, `test_security_hardening.py`. Add new tests there.
+Tests live in `tests/` and run with `pytest` (also in CI before deploy). Files: `test_http_smoke.py` (real ASGI stack), `test_nest_zone_visibility.py` (HTTP + real JWT against a throwaway SQLite file; needs `aiosqlite`, installed by CI: `pip install aiosqlite`), `test_record_client_uuid.py`, `test_record_delete_cascade.py`, `test_session_kinds.py` (session kinds and lifetimes), `test_refresh_cookie.py` (panel cookie sessions over real HTTP against SQLite; the concurrent-rotation lock needs PostgreSQL and is not covered), `test_reliability.py` (publish, requeue, cache races, listener), `test_review_fixes.py`, `test_scale_and_ops.py`, `test_security_hardening.py`. Add new tests there.
 
 ## Notes
 
@@ -256,7 +257,7 @@ Tests live in `tests/` and run with `pytest` (also in CI before deploy). Files: 
 - `database.db` was removed and is ignored.
 - Local Docker Compose includes RabbitMQ but no database container.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
-- Schema reference as of Alembic head `20260610_0018` (details per revision in Migrations): `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and atomic rotation, and key lookup indexes exist.
+- Schema reference as of Alembic head `20261112_0019` (details per revision in Migrations; `refresh_tokens.session_kind` is `mobile|web|web_session`): `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and atomic rotation, and key lookup indexes exist.
 - **Plan Mode**: During planning phases, only generate plans and architecture. Do not output code blocks or file modifications. Wait for explicit implementation command before making any changes.
 
 ## Hardening Notes (2026-06)
