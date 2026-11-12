@@ -109,3 +109,5 @@ Mudou um model? Gere a migration com `alembic revision --autogenerate -m "descri
 ## Mais detalhes
 
 Endpoints, autenticação, paginação, segurança, performance e histórico de migrations estão em [`docs/REFERENCIA.md`](docs/REFERENCIA.md).
+
+Monitoramento do servidor e da API (UptimeRobot e Netdata Cloud): onde ver, quem recebe os alertas e o que fazer quando um chega, em [`docs/MONITORAMENTO.md`](docs/MONITORAMENTO.md).
