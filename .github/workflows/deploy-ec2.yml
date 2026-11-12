@@ -220,12 +220,13 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
-          DEPLOY_HEALTHCHECK_URL: ${{ secrets.DEPLOY_HEALTHCHECK_URL }}
         run: |
           set -Eeuo pipefail
           : "${EC2_USER:=ubuntu}"
-          : "${DEPLOY_HEALTHCHECK_URL:=http://127.0.0.1:8001/health}"
 
+          # A checagem de saúde do deploy é sempre a local (http://127.0.0.1:8001/health, padrão do
+          # scripts/deploy-ec2.sh). Não depende de DNS nem de certificado: um secret apontando para
+          # um nome público (como o ddns.net antigo) derrubava o deploy quando o nome saía do ar.
           ssh -i ~/.ssh/guara-vivo-ec2 "${EC2_USER}@${EC2_HOST}" \
             "set -Eeuo pipefail; \
             cd /opt/guara-vivo/guara-vivo-api; \
@@ -233,4 +234,4 @@ jobs:
             git reset --hard origin/main; \
             install -m 600 /tmp/guara-vivo.env /opt/guara-vivo/guara-vivo-api/.env.docker-compose; \
             rm -f /tmp/guara-vivo.env; \
-            DEPLOY_HEALTHCHECK_URL='${DEPLOY_HEALTHCHECK_URL}' bash scripts/deploy-ec2.sh"
+            bash scripts/deploy-ec2.sh"
