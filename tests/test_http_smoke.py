@@ -89,6 +89,15 @@ class HttpSmokeTests(unittest.TestCase):
     def test_docs_follow_app_env(self):
         self.assertEqual(self.client.get("/openapi.json").status_code, 200)
 
+    def test_public_signup_is_closed(self):
+        # Guara-vivo/documents#56: accounts are created directly in the database.
+        body = {"name": "x", "email": "a@b.com", "password": "12345678"}
+        for path in ("/users/", "/users"):
+            response = self.client.post(path, json=body)
+            self.assertIn(response.status_code, (404, 405), path)
+        paths = self.client.get("/openapi.json").json()["paths"]
+        self.assertNotIn("post", paths.get("/users/", {}))
+
     def test_write_endpoints_removed_from_analysis_and_ibis(self):
         paths = self.client.get("/openapi.json").json()["paths"]
         for prefix in ("/analysis/", "/ibis/"):

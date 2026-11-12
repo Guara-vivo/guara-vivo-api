@@ -126,9 +126,9 @@ class RateLimitRouteTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 429)
         self.assertIn("Retry-After", ctx.exception.headers)
 
-    def test_register_and_refresh_are_limited_too(self):
+    def test_login_and_refresh_are_limited_too(self):
         source = (SRC / "routes" / "user.py").read_text(encoding="utf-8")
-        for limiter in ("login_ip_limiter", "login_email_limiter", "register_ip_limiter", "refresh_ip_limiter"):
+        for limiter in ("login_ip_limiter", "login_email_limiter", "refresh_ip_limiter"):
             self.assertIn(f"enforce_rate_limit({limiter}", source)
 
 
