@@ -36,6 +36,12 @@ class HttpSmokeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
+    def test_health_accepts_head(self):
+        # Monitores externos (UptimeRobot no plano grátis) checam com HEAD e não deixam trocar para GET.
+        response = self.client.head("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"")
+
     def test_protected_routes_require_a_token(self):
         for path in ("/users/me", "/records/", "/records/summary", "/analysis/", "/ibis/", "/map-zones/"):
             self.assertEqual(self.client.get(path).status_code, 401, path)
