@@ -13,12 +13,8 @@ from routes import user, record, analysis, ibis, map_zones, progress
 from database import AsyncSessionLocal, engine
 from models import User
 from middleware import BodyLimitMiddleware
+from refresh_cookie import get_cors_origins
 from requeue import run_requeue_loop
-
-
-def get_cors_origins() -> list[str]:
-    origins = os.getenv("CORS_ORIGINS", "")
-    return [origin.strip() for origin in origins.split(",") if origin.strip()]
 
 
 def get_fastapi_docs_config() -> dict[str, str | None]:

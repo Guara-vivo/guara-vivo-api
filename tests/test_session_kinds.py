@@ -19,6 +19,13 @@ magic_stub = types.ModuleType("magic")
 magic_stub.from_buffer = lambda _file_bytes, mime=True: "image/jpeg"
 sys.modules.setdefault("magic", magic_stub)
 
+from unittest import mock  # noqa: E402
+
+from fastapi import HTTPException  # noqa: E402
+from starlette.requests import Request  # noqa: E402
+from starlette.responses import Response  # noqa: E402
+
+import refresh_cookie  # noqa: E402
 import security  # noqa: E402
 from models import RefreshToken  # noqa: E402
 
@@ -66,6 +73,88 @@ class RefreshTokenModelTests(unittest.TestCase):
             created_at=datetime.now(timezone.utc),
         )
         self.assertEqual(token.session_kind, "mobile")
+
+
+def _set_cookie(response: Response) -> str:
+    return response.headers.getlist("set-cookie")[0]
+
+
+class RefreshCookieTests(unittest.TestCase):
+    def test_web_cookie_attributes(self):
+        response = Response()
+        refresh_cookie.set_refresh_cookie(response, "tok123", "web")
+        cookie = _set_cookie(response)
+
+        self.assertIn("gv_refresh=tok123", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=lax", cookie)
+        self.assertIn("Path=/users", cookie)
+        self.assertIn("Max-Age=604800", cookie)
+        self.assertNotIn("Domain", cookie)
+
+    def test_web_session_cookie_has_no_max_age(self):
+        response = Response()
+        refresh_cookie.set_refresh_cookie(response, "tok123", "web_session")
+        cookie = _set_cookie(response)
+
+        self.assertNotIn("Max-Age", cookie)
+        self.assertNotIn("expires", cookie.lower())
+
+    def test_secure_flag_follows_env(self):
+        with mock.patch.dict(os.environ, {"REFRESH_COOKIE_SECURE": "false"}):
+            response = Response()
+            refresh_cookie.set_refresh_cookie(response, "t", "web")
+            self.assertNotIn("Secure", _set_cookie(response))
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REFRESH_COOKIE_SECURE", None)
+            response = Response()
+            refresh_cookie.set_refresh_cookie(response, "t", "web")
+            self.assertIn("Secure", _set_cookie(response))
+
+    def test_clear_cookie_expires_it(self):
+        response = Response()
+        refresh_cookie.clear_refresh_cookie(response)
+        cookie = _set_cookie(response)
+
+        self.assertIn("gv_refresh=", cookie)
+        self.assertIn("Max-Age=0", cookie)
+        self.assertIn("Path=/users", cookie)
+        self.assertIn("HttpOnly", cookie)
+
+
+def _request(origin: str | None) -> Request:
+    headers = [] if origin is None else [(b"origin", origin.encode())]
+    return Request({"type": "http", "method": "POST", "path": "/users/refresh", "headers": headers})
+
+
+class RejectForeignOriginTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"CORS_ORIGINS": "https://guaravivo.com.br"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_origin_allowed_passes(self):
+        refresh_cookie.reject_foreign_origin(_request("https://guaravivo.com.br"))
+
+    def test_origin_missing_passes(self):
+        refresh_cookie.reject_foreign_origin(_request(None))
+
+    def test_origin_foreign_is_403(self):
+        for origin in (
+            "https://evil.example",
+            "https://api.guaravivo.com.br",
+            "http://guaravivo.com.br",
+            "https://guaravivo.com.br:8443",
+            "null",
+        ):
+            with self.subTest(origin=origin):
+                with self.assertRaises(HTTPException) as caught:
+                    refresh_cookie.reject_foreign_origin(_request(origin))
+                self.assertEqual(caught.exception.status_code, 403)
+
+    def test_get_cors_origins_parses_comma_list(self):
+        with mock.patch.dict(os.environ, {"CORS_ORIGINS": " https://a.example , https://b.example ,"}):
+            self.assertEqual(refresh_cookie.get_cors_origins(), ["https://a.example", "https://b.example"])
 
 
 if __name__ == "__main__":
