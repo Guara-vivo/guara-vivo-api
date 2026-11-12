@@ -177,9 +177,9 @@ async def validate_and_rotate_refresh_token_atomically(
         user_result = await db.execute(select(User).where(User.id == db_token.user_id))
         db_user = user_result.scalar_one_or_none()
         
-        if db_user is None:
+        if db_user is None or not db_user.is_active:
             raise credentials_exception
-        
+
         # Create new token
         session_kind = new_kind or db_token.session_kind
         new_refresh_token, new_db_token = await create_db_refresh_token(db, db_user, request, session_kind)
@@ -205,7 +205,8 @@ async def login(
         user_login.password,
         db_user.password if db_user is not None else _DUMMY_PASSWORD_HASH,
     )
-    if db_user is None or not password_ok:
+    # A deactivated account gets the same answer as a wrong password, so it cannot be told apart.
+    if db_user is None or not password_ok or not db_user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

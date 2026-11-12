@@ -166,7 +166,7 @@ class JwtTests(unittest.TestCase):
     def run_user_lookup(self, token):
         class Result:
             def scalar_one_or_none(self_inner):
-                return SimpleNamespace(id=7)
+                return SimpleNamespace(id=7, is_active=True)
 
         class Db:
             async def execute(self_inner, _q):
