@@ -372,5 +372,66 @@ class RefreshTests(CookieSessionTestCase):
                 session.commit()
 
 
+class LogoutTests(CookieSessionTestCase):
+    def logout(self, cookie: str | None = None, body: dict | None = None, origin: str | None = None):
+        headers = {}
+        if cookie is not None:
+            headers["Cookie"] = f"{COOKIE}={cookie}"
+        if origin is not None:
+            headers["Origin"] = origin
+        return self.client.post("/users/logout", json=body, headers=headers)
+
+    def test_logout_by_cookie_revokes_and_expires_cookie(self):
+        cookie = self.web_login_cookie()
+
+        response = self.logout(cookie=cookie)
+
+        self.assertEqual(response.status_code, 200)
+        header = _set_cookie_header(response)
+        self.assertIsNotNone(header)
+        self.assertIn("Max-Age=0", header)
+        self.assertEqual(self.refresh(cookie=cookie).status_code, 401)
+
+    def test_logout_by_body_still_works_for_mobile(self):
+        token = self.mobile_login_token()
+
+        response = self.logout(body={"refresh_token": token})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(_set_cookie_header(response))
+        self.assertEqual(self.refresh(body={"refresh_token": token}).status_code, 401)
+
+    def test_logout_with_cookie_and_body_revokes_both(self):
+        cookie = self.web_login_cookie()
+        token = self.mobile_login_token()
+
+        response = self.logout(cookie=cookie, body={"refresh_token": token})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.refresh(cookie=cookie).status_code, 401)
+        self.assertEqual(self.refresh(body={"refresh_token": token}).status_code, 401)
+
+    def test_logout_without_any_token_is_200(self):
+        self.assertEqual(self.logout().status_code, 200)
+        self.assertEqual(self.logout(body={}).status_code, 200)
+
+    def test_logout_with_unknown_token_is_200(self):
+        self.assertEqual(self.logout(body={"refresh_token": "not-a-real-token"}).status_code, 200)
+        response = self.logout(cookie="not-a-real-token")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Max-Age=0", _set_cookie_header(response))
+
+    def test_logout_with_cookie_and_foreign_origin_is_403_and_keeps_the_session(self):
+        cookie = self.web_login_cookie()
+
+        response = self.logout(cookie=cookie, origin="https://evil.example")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.refresh(cookie=cookie).status_code, 200)
+
+    def test_empty_body_refresh_token_is_422(self):
+        self.assertEqual(self.logout(body={"refresh_token": ""}).status_code, 422)
+
+
 if __name__ == "__main__":
     unittest.main()

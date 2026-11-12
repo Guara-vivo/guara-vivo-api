@@ -101,7 +101,8 @@ class RefreshTokenRequest(SQLModel):
 
 
 class LogoutRequest(SQLModel):
-    refresh_token: str = Field(min_length=1)
+    # Mobile sends the token here; the panel's comes from the cookie.
+    refresh_token: Optional[str] = Field(default=None, min_length=1)
 
 
 MapZoneType = Literal["feeding", "nest"]

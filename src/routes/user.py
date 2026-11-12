@@ -280,21 +280,32 @@ async def refresh_token(
 
 @router.post("/logout")
 async def logout(
-    payload: LogoutRequest,
+    request: Request,
+    payload: LogoutRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(RefreshToken).where(
-            RefreshToken.token_hash == hash_refresh_token(payload.refresh_token)
-        )
-    )
-    db_token = result.scalar_one_or_none()
+    body_token = payload.refresh_token if payload else None
+    cookie_token = request.cookies.get(REFRESH_COOKIE_NAME)
+    if cookie_token is not None:
+        reject_foreign_origin(request)
 
-    if db_token is not None and db_token.revoked_at is None:
-        db_token.revoked_at = datetime.now(timezone.utc)
+    # Logging out ends every session the request names: the body token (mobile) and the cookie (panel).
+    revoked_any = False
+    for token in {t for t in (body_token, cookie_token) if t is not None}:
+        result = await db.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(token))
+        )
+        db_token = result.scalar_one_or_none()
+        if db_token is not None and db_token.revoked_at is None:
+            db_token.revoked_at = datetime.now(timezone.utc)
+            revoked_any = True
+    if revoked_any:
         await db.commit()
 
-    return {"detail": "Logged out successfully"}
+    response = JSONResponse(content={"detail": "Logged out successfully"})
+    if cookie_token is not None:
+        clear_refresh_cookie(response)
+    return response
 
 
 @router.get("/me", response_model=UserRead)
