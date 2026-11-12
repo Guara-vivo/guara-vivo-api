@@ -374,8 +374,9 @@ async def read_record_detail(
 
     token = get_cache_token(current_user.id)
     result = await db.execute(
-        select(Record, Analysis)
+        select(Record, Analysis, User.name)
         .outerjoin(Analysis, Analysis.recorder_id == Record.id)
+        .join(User, User.id == Record.user_id)
         .where(Record.id == record_id)
     )
     row = result.one_or_none()
@@ -383,8 +384,9 @@ async def read_record_detail(
     if row is None:
         raise HTTPException(status_code=404, detail="Record not found")
 
-    record, analysis = row
-    if record.user_id != current_user.id:
+    record, analysis, author_name = row
+    is_foreign = record.user_id != current_user.id
+    if is_foreign and not current_user.is_admin:
         raise HTTPException(status_code=404, detail="Not found")
 
     ibis_items: list[Ibis] = []
@@ -412,6 +414,14 @@ async def read_record_detail(
         image_analyses,
         zones_by_record.get(record.id, []),
     )
+    payload["author_name"] = author_name
+
+    if is_foreign:
+        # An admin reading someone else's record is not cached: the worker invalidates only the
+        # owner's entries, so a copy under the admin's key would go stale for up to the TTL.
+        response.headers["Cache-Control"] = "private, no-store"
+        return payload
+
     return set_cached_payload(response, cache_key, payload, current_user.id, token)
 
 @router.get("/{record_id}", response_model=RecordRead)
