@@ -1,14 +1,25 @@
 import bcrypt
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 from database import get_db
 from models import RefreshToken, User
-from schemas import LogoutRequest, RefreshTokenRequest, Token, UserCreate, UserLogin, UserRead, UserUpdate
+from schemas import LogoutRequest, RefreshTokenRequest, Token, UserCreate, UserLogin, UserRead, UserUpdate, WebToken
 from ratelimit import RateLimiter
-from security import create_access_token, create_refresh_token, get_current_user, hash_refresh_token
+from refresh_cookie import set_refresh_cookie
+from security import (
+    SESSION_KIND_MOBILE,
+    SESSION_KIND_WEB,
+    SESSION_KIND_WEB_SESSION,
+    WEB_SESSION_KINDS,
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+    hash_refresh_token,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 # Per-process limits (see ratelimit.py). Login is limited per IP and, more loosely, per
@@ -67,11 +78,12 @@ async def create_db_refresh_token(
     db: AsyncSession,
     user: User,
     request: Request,
+    session_kind: str = SESSION_KIND_MOBILE,
 ) -> tuple[str, RefreshToken]:
     if user.id is None:
         raise RuntimeError("Cannot create refresh token for unsaved user")
 
-    token, jti, expires_at = create_refresh_token()
+    token, jti, expires_at = create_refresh_token(session_kind)
     db_token = RefreshToken(
         user_id=user.id,
         token_hash=hash_refresh_token(token),
@@ -80,10 +92,19 @@ async def create_db_refresh_token(
         created_at=datetime.now(timezone.utc),
         user_agent=get_request_user_agent(request),
         ip_address=get_request_ip(request),
+        session_kind=session_kind,
     )
     db.add(db_token)
     await db.flush()
     return token, db_token
+
+
+def web_session_response(db_user: User, access_token: str, refresh_token: str, session_kind: str) -> JSONResponse:
+    """Panel response: the refresh token goes only in the HttpOnly cookie, never in the body."""
+    body = WebToken(access_token=access_token, user=UserRead.model_validate(db_user, from_attributes=True))
+    response = JSONResponse(content=body.model_dump(mode="json"))
+    set_refresh_cookie(response, refresh_token, session_kind)
+    return response
 
 
 async def get_valid_refresh_token(
@@ -186,8 +207,14 @@ async def login(
             detail="Incorrect email or password",
         )
 
-    refresh_token, _ = await create_db_refresh_token(db, db_user, request)
+    session_kind = SESSION_KIND_MOBILE
+    if user_login.client == "web":
+        session_kind = SESSION_KIND_WEB if user_login.remember else SESSION_KIND_WEB_SESSION
+    refresh_token, _ = await create_db_refresh_token(db, db_user, request, session_kind)
     await db.commit()
+
+    if session_kind in WEB_SESSION_KINDS:
+        return web_session_response(db_user, create_access_token(db_user), refresh_token, session_kind)
 
     return {
         "access_token": create_access_token(db_user),
