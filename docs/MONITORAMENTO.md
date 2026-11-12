@@ -37,7 +37,8 @@ Todos são os alertas padrão do Netdata, sem alteração:
 | Disco (`disk_space_usage`) | Warning acima de 90%; crítico acima de 98% e com menos de 5 GiB livres |
 | Memória (`ram_in_use`) | Warning acima de 90%; crítico acima de 98% (cache não conta) |
 | CPU (`10min_cpu_usage`) | Média de 10 minutos alta |
-| Contêiner (`docker_container_unhealthy`) | Contêiner com healthcheck fica `unhealthy` |
+| Contêiner (`docker_container_unhealthy`) | Contêiner com healthcheck fica `unhealthy` (api, identifier, rabbitmq e worker têm healthcheck) |
+| Contêiner parado (`docker_container_not_running`, alerta próprio) | Warning quando um contêiner passa mais da metade dos últimos 3 minutos parado (`exited`) ou reiniciando (`restarting`); vale para todos os contêineres |
 | Outros | `oom_kill`, uso de swap, `load_average_*`, previsão de disco/inodes acabando |
 | Servidor | Nó some do Cloud (Unreachable) |
 
@@ -60,6 +61,12 @@ Para referência: os contêineres têm teto de memória no `docker-compose.yml` 
 **Contêiner `unhealthy`**
 
 - `docker ps` e `docker logs <contêiner>`; o healthcheck de cada um está no `Dockerfile` ou no `docker-compose.yml`.
+- Worker `unhealthy`: o laço do RabbitMQ parou de responder ou a conexão caiu (o arquivo `/tmp/worker-alive` ficou com mais de 90 s). Veja `docker logs guara-vivo-api-worker-1` e o estado do RabbitMQ.
+
+**Contêiner parado ou reiniciando (Netdata)**
+
+- `docker ps -a` mostra quem está `Exited` ou `Restarting`; `docker logs <contêiner>` mostra por quê. Um contêiner que o `restart: unless-stopped` não consegue manter de pé aparece como `Restarting`.
+- Uma parada curta (como a de um deploy, de alguns segundos) não dispara o alerta, de propósito.
 
 **Servidor "Unreachable" no Netdata**
 
@@ -67,10 +74,10 @@ Para referência: os contêineres têm teto de memória no `docker-compose.yml` 
 
 ## O que ainda NÃO está coberto
 
-- **Worker:** não tem healthcheck, então travar ou parar não dispara alerta ([documents#71](https://github.com/Guara-vivo/documents/issues/71)).
+- **Job do worker pendurado:** o healthcheck do worker mede se o laço do RabbitMQ responde, não se o job está andando. Um job travado (por exemplo, uma chamada ao banco sem timeout) mantém o worker `healthy` até o `consumer_timeout` do broker (~30 min). Foi uma escolha para não alarmar por inferência lenta ([documents#71](https://github.com/Guara-vivo/documents/issues/71)).
 - **Erros da aplicação:** picos de 401/403/429/5xx e falhas de conexão com o Supabase não aparecem no Netdata. Dependem de captura de erros (Sentry, opcional na #61) ou de leitura dos logs.
 - **Vencimento do certificado:** o aviso antecipado é só em plano pago do UptimeRobot. O Caddy renova sozinho; se um dia o certificado vencer, o monitor HTTP falha e o alerta chega, só que sem antecedência.
-- **Teste real de queda:** o teste de derrubar a API de propósito e ver o alerta chegar ainda não foi feito (critério de aceite da #61).
+- **Testes reais de queda:** derrubar a API de propósito (UptimeRobot, critério de aceite da #61) e parar o worker de propósito (Netdata, critério da #71) ainda não foram feitos em horário combinado. O alerta de contêiner parado foi testado com contêineres descartáveis em 2026-11-12 (chegou o e-mail do contêiner parado e do que reinicia em ciclo; a parada de 20 s não alertou).
 
 ## Detalhes e cuidados
 
@@ -105,6 +112,28 @@ docker run -d --name=netdata \
   --security-opt label=disable \
   netdata/netdata:stable
 ```
+
+**Alerta de contêiner parado (arquivo próprio no Netdata)**
+
+Ele vive só no volume `netdataconfig` da EC2 (`/etc/netdata/health.d/container-parado.conf`), fora de qualquer repositório; por isso o conteúdo fica aqui, para poder ser recriado. Depois de criar ou mudar o arquivo: `docker exec netdata netdatacli reload-health`. A janela de 3 minutos precisa encher, então o alerta fica `UNINITIALIZED` nos primeiros minutos de um contêiner novo.
+
+```
+template: docker_container_not_running
+      on: docker.container_state
+  lookup: average -3m unaligned of exited,restarting
+   every: 30s
+    warn: $this > 0.5
+   delay: down 5m
+ summary: Docker container ${label:container_name} parado ou reiniciando
+    info: Fracao dos ultimos 3 minutos em que o contêiner esteve parado (exited) ou reiniciando (restarting)
+      to: sysadmin
+```
+
+Se alguém parar um contêiner de propósito por mais de uns 2 minutos, o alerta vai avisar (é o esperado).
+
+**Healthcheck do worker**
+
+- `liveness.py` (no repositório `guara-vivo-worker`): uma thread pede ao laço do RabbitMQ, a cada 15 s, que grave a hora em `/tmp/worker-alive`; o `HEALTHCHECK` do Docker falha se o arquivo tiver mais de 90 s (intervalo 30 s, timeout 5 s, `start-period` 60 s, 3 tentativas). O worker em inferência longa não fica `unhealthy`, porque o job roda em outra thread.
 
 ## Como testar o caminho do alerta
 
