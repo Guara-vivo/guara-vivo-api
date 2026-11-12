@@ -65,6 +65,10 @@ class UserLogin(SQLModel):
     email: EmailStr
     # Lenient on purpose: accounts created under the old (shorter) policy must still log in.
     password: str = Field(min_length=1, max_length=128)
+    # "web" (the panel) gets its refresh token in an HttpOnly cookie, never in the body. Anything else,
+    # including no value, is the mobile app and keeps today's contract. `remember` only matters for web.
+    client: Literal["web", "mobile"] = "mobile"
+    remember: bool = False
 
     @field_validator("email")
     @classmethod
@@ -79,12 +83,26 @@ class Token(SQLModel):
     user: UserRead
 
 
+class WebToken(SQLModel):
+    """Response for panel sessions: same as Token without the refresh token (it travels in the cookie)."""
+
+    access_token: str
+    token_type: str = "bearer"
+    user: UserRead
+
+
 class RefreshTokenRequest(SQLModel):
-    refresh_token: str = Field(min_length=1)
+    # Mobile sends the token here. The panel sends none: it comes from the HttpOnly cookie.
+    refresh_token: Optional[str] = Field(default=None, min_length=1)
+    # Only meaningful together with a body token: the panel uses it once to move a session it kept in
+    # localStorage over to the cookie. Cookie tokens keep the kind they already have.
+    client: Optional[Literal["web", "mobile"]] = None
+    remember: bool = False
 
 
 class LogoutRequest(SQLModel):
-    refresh_token: str = Field(min_length=1)
+    # Mobile sends the token here; the panel's comes from the cookie.
+    refresh_token: Optional[str] = Field(default=None, min_length=1)
 
 
 MapZoneType = Literal["feeding", "nest"]

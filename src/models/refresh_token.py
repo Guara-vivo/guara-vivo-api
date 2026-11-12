@@ -18,6 +18,8 @@ class RefreshToken(SQLModel, table=True):
     replaced_by_token_id: Optional[int] = Field(default=None, foreign_key="refresh_tokens.id", ondelete="SET NULL")
     user_agent: Optional[str] = Field(default=None, sa_column=Column(String(length=512)))
     ip_address: Optional[str] = Field(default=None, sa_column=Column(String(length=128)))
+    # mobile | web | web_session (see security.SESSION_KIND_*); rotation inherits it.
+    session_kind: str = Field(default="mobile", sa_column=Column(String(16), nullable=False, server_default="mobile"))
 
     class Config:
         from_attributes = True

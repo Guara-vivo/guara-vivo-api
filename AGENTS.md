@@ -112,8 +112,9 @@ python src/seed.py
 ## API Endpoints
 
 - `GET /docs` - Swagger UI (also `/redoc` and `/openapi.json`); all three are disabled when `APP_ENV=production`
-- `/users/login` - POST, validates email/password and returns a JWT access token, refresh token, and user data
-- `/users/refresh` - POST, validates refresh token and issues new access/refresh token pair
+- `/users/login` - POST, validates email/password and returns a JWT access token, refresh token, and user data. Body also takes `client` (`"web"` | `"mobile"`, default `"mobile"`) and `remember` (bool, web only); with `client="web"` the refresh token goes only in the `gv_refresh` HttpOnly cookie and the body has no `refresh_token` (see Authentication).
+- `/users/refresh` - POST, validates refresh token (body, else the `gv_refresh` cookie) and issues new access/refresh token pair; the body is optional
+- `/users/logout` - POST, revokes the refresh token(s) named by the body and/or the cookie and expires the cookie
 - `/users/me` - GET, protected endpoint that returns the current authenticated user from `Authorization: Bearer <token>`
 - `/users/{id}` - GET, PUT, DELETE protected by JWT and limited to the authenticated user (others get 404). PUT requires `current_password`; `password` (new) is optional and, when set, revokes all refresh tokens. DELETE cascades to records, zones and refresh tokens.
 - `/records` - CRUD on records; create/update/delete require JWT and ownership through `user_id`
@@ -141,6 +142,9 @@ python src/seed.py
 - Refresh tokens are long-lived, single-use, and persisted in the `refresh_tokens` table for revocation support.
 - Refresh token rotation is atomic: validation, issuance, and revocation occur in the same transaction with pessimistic locking (`SELECT ... FOR UPDATE`) to prevent concurrent reuse.
 - `POST /users/refresh` endpoint validates refresh tokens and issues new access/refresh token pairs.
+- Two session kinds, stored in `refresh_tokens.session_kind` (migration `20261112_0019`, default `mobile`): `mobile` (the app: 1 year, token in the response body, no change for clients that send no `client`), `web` (the panel with "remember me": 7 days, sliding) and `web_session` (the panel without it: 24 h, session cookie). Rotation inherits the kind. Panel kinds are delivered only in the cookie `gv_refresh` (`HttpOnly`, `Secure` by `REFRESH_COOKIE_SECURE`, `SameSite=Lax`, `Path=/users`, no `Domain`; `Max-Age` only for `web`); their responses never carry `refresh_token` in the body (`WebToken`), so a script in the page cannot read it. Code in `src/refresh_cookie.py`.
+- `POST /users/refresh` and `/users/logout` read the token from the body if present (it wins), else from the cookie. A cookie-borne request is checked against `CORS_ORIGINS`: an `Origin` that is present and not allowed gets 403 (no `Origin` is accepted); body-borne requests skip that check. An invalid cookie token answers 401 and expires the cookie.
+- One-time migration of a panel session kept in `localStorage`: send that token in the refresh body with `client="web"` and `remember`; the new token is a panel kind delivered by cookie. `client`/`remember` are ignored for cookie tokens.
 - Refresh token revocation is tracked via `revoked_at` column and `replaced_by_token_id` linkage.
 - Protected endpoints should depend on `get_current_user` from `src/security.py`.
 - User read/update/delete routes require the authenticated user's own id.
@@ -159,7 +163,9 @@ python src/seed.py
 - `ADMIN_EMAIL` and `ADMIN_PASSWORD` configure the startup admin seed. If set, the API creates an admin user on first startup if no user exists. Both must be provided together or both omitted.
 - `JWT_ACCESS_TOKEN_EXPIRE` is optional and defaults to `3600` seconds.
 - `JWT_REFRESH_TOKEN_EXPIRE` is optional and defaults to `31536000` seconds (1 year), sliding: every refresh issues a new token with a fresh 1 year. It is long on purpose because the app works offline and a device can stay without network for months; clients must only drop the session when `POST /users/refresh` answers 401, never on network errors.
-- `CORS_ORIGINS` is optional and should be a comma-separated allowlist of frontend origins. If empty, CORS middleware is not enabled.
+- `JWT_WEB_REFRESH_TOKEN_EXPIRE` (604800, 7 days) and `JWT_WEB_SESSION_REFRESH_TOKEN_EXPIRE` (86400, 24 h) set the panel session lengths; both are sliding and have defaults in `docker-compose.yml`, so no new secret is needed.
+- `REFRESH_COOKIE_SECURE` defaults to `true`; set `false` only for local development over plain HTTP (a `Secure` cookie is not sent back by every browser over `http://`).
+- `CORS_ORIGINS` is optional and should be a comma-separated allowlist of frontend origins. If empty, CORS middleware is not enabled. The cookie CSRF check reads the same list, so with it empty a cookie request with any `Origin` is refused.
 - `MAX_REQUEST_BODY_BYTES` is optional and defaults to `10485760` (10MB). Enforced by ASGI middleware by reading the request stream.
 - `MAX_UPLOAD_FILE_BYTES` is optional and defaults to `5242880` (5MB) per uploaded image. Aggregate upload limit is 10MB per request.
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_STORAGE_BUCKET` configure API uploads to Supabase Storage. The default bucket is `frontend-uploads`.
