@@ -9,7 +9,7 @@ Duas camadas, uma de fora e uma de dentro do servidor:
 | Camada | Ferramenta | O que vigia | Como avisa |
 |---|---|---|---|
 | De fora | UptimeRobot (plano grátis) | `https://api.guaravivo.com.br/health` e `https://guaravivo.com.br`, a cada 5 minutos | E-mail |
-| De dentro | Netdata Cloud (plano grátis) | CPU, memória, disco, contêineres e se o servidor some do Cloud | E-mail (Critical, Warning e Unreachable) |
+| De dentro | Netdata Cloud (plano grátis) | CPU, memória, disco, contêineres, rajadas de respostas 5xx da API (pelo log do Caddy) e se o servidor some do Cloud | E-mail (Critical, Warning e Unreachable) |
 
 O UptimeRobot responde "a API está de pé para quem usa?". O Netdata responde "o servidor está saudável por dentro?". Um não substitui o outro.
 
@@ -30,7 +30,7 @@ Os e-mails ficam nas contas, não neste arquivo. Se mais alguém precisar recebe
 
 ## Alertas ativos e limites
 
-Todos são os alertas padrão do Netdata, sem alteração:
+Exceto os dois marcados como "alerta próprio", são os alertas padrão do Netdata, sem alteração:
 
 | O quê | Avisa quando |
 |---|---|
@@ -39,6 +39,7 @@ Todos são os alertas padrão do Netdata, sem alteração:
 | CPU (`10min_cpu_usage`) | Média de 10 minutos alta |
 | Contêiner (`docker_container_unhealthy`) | Contêiner com healthcheck fica `unhealthy` (api, identifier, rabbitmq e worker têm healthcheck) |
 | Contêiner parado (`docker_container_not_running`, alerta próprio) | Warning quando um contêiner passa mais da metade dos últimos 3 minutos parado (`exited`) ou reiniciando (`restarting`); vale para todos os contêineres |
+| API com muitos 5xx (`api_5xx_burst`, alerta próprio) | Warning quando o Caddy devolve 10 ou mais respostas 5xx nos últimos 10 minutos (inclui os 502 de quando a API está fora e os 5xx que a própria API devolve) |
 | Outros | `oom_kill`, uso de swap, `load_average_*`, previsão de disco/inodes acabando |
 | Servidor | Nó some do Cloud (Unreachable) |
 
@@ -68,6 +69,13 @@ Para referência: os contêineres têm teto de memória no `docker-compose.yml` 
 - `docker ps -a` mostra quem está `Exited` ou `Restarting`; `docker logs <contêiner>` mostra por quê. Um contêiner que o `restart: unless-stopped` não consegue manter de pé aparece como `Restarting`.
 - Uma parada curta (como a de um deploy, de alguns segundos) não dispara o alerta, de propósito.
 
+**API com muitos 5xx (Netdata, `api_5xx_burst`)**
+
+- O alerta conta respostas 5xx no log do Caddy, então diz *que* está falhando, não *por quê*. Veja o que respondeu: `sudo grep -E '"status":5[0-9][0-9]' /var/log/caddy/access.log | tail -20` (campos `request.uri` e `status`).
+- Muitos 502 em `/health`, `/users/me` ou `/records/progress/ws` indicam a API fora do ar para o Caddy (deploy, reinício ou queda): siga o roteiro de "API fora do ar".
+- 5xx em rotas de registros (`/records`) com a API de pé: `docker logs guara-vivo-api-api-1` mostra o erro (falha de Supabase, RabbitMQ ou código) e o painel do Supabase mostra o lado do banco.
+- Uma rajada de deploy pode, de vez em quando, passar do limite. No histórico de 10 dias o limite teria avisado 2 vezes; se for deploy, não há o que fazer.
+
 **Servidor "Unreachable" no Netdata**
 
 - A EC2 pode estar desligada ou sem rede, ou o Netdata parou. Veja o estado da instância no console da AWS e tente o SSH.
@@ -75,7 +83,7 @@ Para referência: os contêineres têm teto de memória no `docker-compose.yml` 
 ## O que ainda NÃO está coberto
 
 - **Job do worker pendurado:** o healthcheck do worker mede se o laço do RabbitMQ responde, não se o job está andando. Um job travado (por exemplo, uma chamada ao banco sem timeout) mantém o worker `healthy` até o `consumer_timeout` do broker (~30 min). Foi uma escolha para não alarmar por inferência lenta ([documents#71](https://github.com/Guara-vivo/documents/issues/71)).
-- **Erros da aplicação:** picos de 401/403/429/5xx e falhas de conexão com o Supabase não aparecem no Netdata. Dependem de captura de erros (Sentry, opcional na #61) ou de leitura dos logs.
+- **Erros da aplicação:** só rajadas de 5xx (10 ou mais em 10 minutos) avisam. Um erro isolado, os 4xx (401/403/422/429, cheios de robôs no 404) e a causa do erro não aparecem: para isso, `docker logs` e o painel do Supabase. A captura com Sentry (opcional na #61) foi adiada: avaliada a opção de uma inicialização mínima, sem corpo de requisição nem dados pessoais e com limitador de eventos, ficou para quando o log se mostrar insuficiente.
 - **Vencimento do certificado:** o aviso antecipado é só em plano pago do UptimeRobot. O Caddy renova sozinho; se um dia o certificado vencer, o monitor HTTP falha e o alerta chega, só que sem antecedência.
 - **Testes reais de queda:** derrubar a API de propósito (UptimeRobot, critério de aceite da #61) e parar o worker de propósito (Netdata, critério da #71) ainda não foram feitos em horário combinado. O alerta de contêiner parado foi testado com contêineres descartáveis em 2026-11-12 (chegou o e-mail do contêiner parado e do que reinicia em ciclo; a parada de 20 s não alertou).
 
@@ -130,6 +138,46 @@ template: docker_container_not_running
 ```
 
 Se alguém parar um contêiner de propósito por mais de uns 2 minutos, o alerta vai avisar (é o esperado).
+
+**Respostas 5xx da API (coletor `web_log` e alerta próprio)**
+
+O Caddy grava um log de acesso em JSON (`/var/log/caddy/access.log`, `roll_size 50mb`, `roll_keep 5`, no `Caddyfile`). O Netdata, como root no contêiner, lê esse arquivo pelo mount `/host/root` com o coletor `web_log`. Os dois arquivos abaixo também vivem só no volume `netdataconfig`, fora de qualquer repositório.
+
+`/etc/netdata/go.d/web_log.conf` (no mapeamento, a chave é o campo do log do Caddy e o valor é o nome conhecido do Netdata, sem `$`; só os campos de nível superior são lidos):
+
+```yaml
+jobs:
+  - name: caddy_api
+    path: /host/root/var/log/caddy/access.log
+    log_type: json
+    json_config:
+      mapping:
+        status: status
+        size: body_bytes_sent
+        duration: request_time
+```
+
+- O plugin `go.d` só lê esta pasta quando inicia. Depois de criar ou mudar o arquivo, reinicie **só o plugin** (o contêiner e a API continuam de pé; os coletores do `go.d` ficam uns 10 a 30 s sem dados): `docker exec netdata pkill -x go.d.plugin` (`-x` casa o nome exato; sem ele o `pkill` pode matar o próprio `sh`). O Netdata o sobe de novo sozinho. Em `docker logs netdata`, procure `check success ... job=caddy_api`.
+- O coletor só conta o que entra no log depois que sobe; um log novo (rotação) é seguido sozinho.
+- Os alertas padrão do `web_log` (`web_log_1m_*`) só valem com mais de 120 requisições por minuto, bem acima do tráfego da API, então não disparam. Por isso o alerta próprio abaixo.
+
+`/etc/netdata/health.d/erros-5xx.conf` (depois de criar ou mudar: `docker exec netdata netdatacli reload-health`):
+
+```
+template: api_5xx_burst
+      on: web_log.status_code_class_responses
+  lookup: sum -10m unaligned of 5xx
+   every: 30s
+    warn: $this >= 10
+   delay: down 5m
+ summary: API com muitas respostas 5xx
+    info: Quantidade de respostas 5xx da API (log do Caddy) nos ultimos 10 minutos
+      to: sysadmin
+```
+
+- O limite 10 foi escolhido pelo histórico de 3 a 12 de novembro (103 respostas 5xx, em rajadas de 2 a 12 por hora, quase todas de deploy ou reinício): em janelas de 10 minutos, 3 ou mais teria avisado 13 vezes, 5 ou mais 8, 10 ou mais 2 e 15 ou mais nenhuma (o pico foi 12). Reveja se o padrão de deploys ou o volume mudar.
+- A unidade do gráfico é `responses/s` com coleta a cada 1 s, então a soma da janela é a contagem de respostas (conferido: 2 chamadas a `/health` e 3 a uma rota inexistente viraram 2 respostas 2xx e 3 respostas 4xx).
+- Ainda não foi visto disparando de verdade (não há como gerar 5xx sem derrubar a API); o caminho do e-mail é o mesmo `to: sysadmin` do alerta de contêiner parado, já testado.
 
 **Healthcheck do worker**
 
