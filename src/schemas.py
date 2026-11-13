@@ -305,6 +305,7 @@ class AnalysisImageRead(AnalysisImageBase):
 
 
 class RecordDetailRead(RecordRead):
+    author_name: Optional[str] = None
     analysis: Optional[AnalysisRead] = None
     ibis: List[IbisRead] = Field(default_factory=list)
     image_analyses: List[AnalysisImageRead] = Field(default_factory=list)
