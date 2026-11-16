@@ -1,0 +1,35 @@
+name: Tests
+
+# Roda a suíte em todo pull request. Não faz deploy, não usa secrets e não toca no servidor:
+# o deploy continua só no deploy-ec2.yml (push na main).
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest aiosqlite
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://user:password@localhost:5432/test
+          JWT_SECRET_KEY: ci-only-secret
+        run: python -m pytest -q
