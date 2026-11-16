@@ -29,7 +29,10 @@ magic_stub = types.ModuleType("magic")
 magic_stub.from_buffer = lambda _file_bytes, mime=True: "image/jpeg"
 sys.modules.setdefault("magic", magic_stub)
 
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import event  # noqa: E402
+from sqlalchemy.exc import DBAPIError  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 import database  # noqa: E402
@@ -135,6 +138,73 @@ class EngineAppliesTheSettingTests(unittest.TestCase):
         """No `server_settings`: see the module docstring."""
         kwargs = database.engine.sync_engine.dialect.create_connect_args(database.engine.url)[1]
         self.assertNotIn("server_settings", kwargs)
+
+
+class FakeDriverError(Exception):
+    """Shaped like the driver error SQLAlchemy keeps in `DBAPIError.orig` (it has `sqlstate`)."""
+
+    def __init__(self, sqlstate: str, message: str = "boom"):
+        super().__init__(message)
+        self.sqlstate = sqlstate
+
+
+def app_raising(sqlstate: str) -> FastAPI:
+    import db_errors
+
+    app = FastAPI()
+    db_errors.register_database_error_handlers(app)
+
+    @app.get("/boom")
+    async def boom():
+        raise DBAPIError("SELECT secret FROM users", {"p": "value"}, FakeDriverError(sqlstate))
+
+    return app
+
+
+class StatementTimeoutAnswerTests(unittest.TestCase):
+    """A cancelled statement answers 503 (retry later), not a bare 500; other database errors stay 500."""
+
+    def test_statement_timeout_is_a_503_with_retry_after(self):
+        response = TestClient(app_raising("57014")).get("/boom")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.headers["retry-after"], "5")
+        self.assertIn("detail", response.json())
+
+    def test_answer_does_not_leak_sql_or_parameters(self):
+        body = TestClient(app_raising("57014")).get("/boom").text
+        for secret in ("SELECT", "secret", "users", "value"):
+            self.assertNotIn(secret, body)
+
+    def test_other_database_errors_are_not_swallowed(self):
+        client = TestClient(app_raising("23505"), raise_server_exceptions=False)
+        self.assertEqual(client.get("/boom").status_code, 500)
+        with self.assertRaises(DBAPIError):
+            TestClient(app_raising("23505")).get("/boom")
+
+    def test_error_without_a_sqlstate_is_not_swallowed(self):
+        app = FastAPI()
+        import db_errors
+
+        db_errors.register_database_error_handlers(app)
+
+        @app.get("/boom")
+        async def boom():
+            raise DBAPIError("SELECT 1", {}, Exception("no sqlstate"))
+
+        self.assertEqual(TestClient(app, raise_server_exceptions=False).get("/boom").status_code, 500)
+
+    def test_sqlstate_on_the_wrapped_cause_is_found_too(self):
+        """asyncpg's own exception sits one level down in some SQLAlchemy versions."""
+        import db_errors
+
+        outer = Exception("adapted")
+        outer.__cause__ = FakeDriverError("57014")
+        self.assertTrue(db_errors.is_statement_timeout(DBAPIError("x", {}, outer)))
+
+    def test_the_real_app_registers_the_handler(self):
+        import main
+
+        self.assertIn(DBAPIError, main.app.exception_handlers)
 
 
 class EnvironmentValueTests(unittest.TestCase):
