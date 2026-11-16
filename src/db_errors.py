@@ -26,6 +26,11 @@ def _sqlstate(error: BaseException | None) -> str | None:
     return None
 
 
+def sqlstate_of(error: BaseException) -> str | None:
+    """SQLSTATE of a SQLAlchemy `DBAPIError` (read from its driver error) or of a driver error itself."""
+    return _sqlstate(getattr(error, "orig", error))
+
+
 def is_statement_timeout(error: DBAPIError) -> bool:
     return _sqlstate(error.orig) == QUERY_CANCELED_SQLSTATE
 
