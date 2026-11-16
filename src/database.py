@@ -3,6 +3,7 @@ import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
@@ -23,6 +24,11 @@ def get_int_env(name: str, default: int) -> int:
 # cannot hold a pooled connection indefinitely. 30 s is far above any query the API runs today.
 # <= 0 turns it off. Only the API's engine uses it: Alembic and the progress LISTEN connection
 # open their own connections and are not limited.
+#
+# Applied with `SET` after each connection opens, not as a startup parameter (`server_settings`):
+# Supabase's pooler accepts a startup parameter and silently ignores it (checked by hand: SHOW still
+# returned the role default). The SET is session-wide, so it needs the session-mode connection the
+# API already requires (direct, or the pooler on port 5432).
 DEFAULT_STATEMENT_TIMEOUT_SECONDS = 30
 
 
@@ -30,11 +36,34 @@ def read_statement_timeout_seconds() -> int:
     return get_int_env("DATABASE_STATEMENT_TIMEOUT_SECONDS", DEFAULT_STATEMENT_TIMEOUT_SECONDS)
 
 
-def build_connect_args(statement_timeout_seconds: int) -> dict:
-    """asyncpg connect arguments: the setting travels in the startup packet of every new connection."""
+def statement_timeout_sql(statement_timeout_seconds: int) -> str | None:
     if statement_timeout_seconds <= 0:
-        return {}
-    return {"server_settings": {"statement_timeout": str(statement_timeout_seconds * 1000)}}
+        return None
+    return f"SET statement_timeout = {int(statement_timeout_seconds) * 1000}"
+
+
+def apply_statement_timeout(sync_engine, statement_timeout_seconds: int):
+    """Run the SET on every new connection of the pool, and commit it.
+
+    The commit matters: SQLAlchemy rolls back each connection it takes back into the pool, and a
+    SET that is still inside the open transaction would be undone by that rollback.
+
+    Returns the registered listener (None when disabled).
+    """
+    statement = statement_timeout_sql(statement_timeout_seconds)
+    if statement is None:
+        return None
+
+    @event.listens_for(sync_engine, "connect")
+    def set_statement_timeout(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(statement)
+        finally:
+            cursor.close()
+        dbapi_connection.commit()
+
+    return set_statement_timeout
 
 
 if DATABASE_URL is None:
@@ -65,13 +94,13 @@ logger.info("Using external PostgreSQL database")
 STATEMENT_TIMEOUT_SECONDS = read_statement_timeout_seconds()
 engine = create_async_engine(
     ASYNC_DATABASE_URL,
-    connect_args=build_connect_args(STATEMENT_TIMEOUT_SECONDS),
     pool_pre_ping=True,
     pool_size=get_int_env("DATABASE_POOL_SIZE", 5),
     max_overflow=get_int_env("DATABASE_MAX_OVERFLOW", 10),
     pool_timeout=get_int_env("DATABASE_POOL_TIMEOUT", 30),
     pool_recycle=get_int_env("DATABASE_POOL_RECYCLE", 1800),
 )
+statement_timeout_listener = apply_statement_timeout(engine.sync_engine, STATEMENT_TIMEOUT_SECONDS)
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
