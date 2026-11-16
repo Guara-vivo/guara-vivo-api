@@ -173,6 +173,7 @@ python src/seed.py
 - `MAX_UPLOAD_FILE_BYTES` is optional and defaults to `5242880` (5MB) per uploaded image. Aggregate upload limit is 10MB per request.
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_STORAGE_BUCKET` configure API uploads to Supabase Storage. The default bucket is `frontend-uploads`.
 - `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE` tune SQLAlchemy async pool behavior.
+- `DATABASE_STATEMENT_TIMEOUT_SECONDS` (default 30, `<= 0` disables) sets Postgres `statement_timeout` on every connection of the API's async engine (`server_settings` in `src/database.py`), so one slow query cannot hold a pooled connection forever. A cancelled statement raises error 57014 (a 500 today). It does not apply to Alembic (own sync engine, so `CREATE INDEX CONCURRENTLY` and other long migrations are fine), to the progress LISTEN connection (`asyncpg.connect`), or to the worker (its own connection in the worker repo). It is sent as a startup parameter, so a pooler that rejects startup parameters (transaction-mode PgBouncer/Supavisor) would refuse the connection: set the variable to `0` there. The API already needs a direct/session-mode connection for LISTEN.
 - `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, and `QUEUE_NAME` configure API queue publishing.
 - `RABBITMQ_DEFAULT_USER` and `RABBITMQ_DEFAULT_PASS` configure the local RabbitMQ Docker container.
 - `APP_ENV=production` disables the docs endpoints.
