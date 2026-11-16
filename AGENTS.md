@@ -136,6 +136,7 @@ python src/seed.py
 - Passwords are required for users and must be stored only as bcrypt hashes.
 - Use `bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")` for hashing and `bcrypt.checkpw()` for verification.
 - `src/routes/user.py` owns password hashing, password verification, user creation/update, and login.
+- bcrypt is slow on purpose (hundreds of ms). Routes call `hash_password_async`/`verify_password_async` (they run the sync helpers in a worker thread); never call `hash_password`/`verify_password` directly from an `async def`, it freezes the event loop for every other request. `scripts/bench_login_event_loop.py` measures it.
 - `src/security.py` owns JWT access-token creation, refresh-token management, and current-user validation.
 - Login returns a JWT access token with `token_type="bearer"` and the authenticated `UserRead` payload. For the mobile app (default) it also returns the refresh token in the body; for the panel (`client="web"`) the refresh token goes only in the cookie (see the session kinds below).
 - Auth endpoints are rate limited per process by `src/ratelimit.py` (limits listed in Hardening Notes).
