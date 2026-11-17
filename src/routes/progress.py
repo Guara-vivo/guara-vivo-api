@@ -7,10 +7,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from database import DEFAULT_DATABASE_URL, AsyncSessionLocal
+from db_errors import sqlstate_of
 from models import Record
 from security import get_user_from_access_token
 
@@ -273,8 +275,19 @@ async def authenticate_websocket_token(token: str | None):
     async with AsyncSessionLocal() as db:
         try:
             return await get_user_from_access_token(token, db)
-        except Exception:
+        except HTTPException:
+            # The only answer that means "bad credentials" (invalid, expired, unknown or deactivated).
+            # Any other failure (database error, missing JWT_SECRET_KEY) is the server's, not the
+            # client's, and propagates so the websocket closes with 1011 instead of 1008.
             return None
+
+
+def log_websocket_failure(stage: str, exc: Exception) -> None:
+    """One line for a database error (never its SQL or parameters), a traceback for anything else."""
+    if isinstance(exc, DBAPIError):
+        logger.warning("progress websocket %s failed: %s (sqlstate %s)", stage, type(exc).__name__, sqlstate_of(exc))
+    else:
+        logger.exception("progress websocket %s failed", stage)
 
 
 async def authenticate_websocket(websocket: WebSocket):
@@ -308,7 +321,12 @@ async def wait_for_disconnect(websocket: WebSocket) -> None:
 @router.websocket("/ws")
 async def record_progress_websocket(websocket: WebSocket):
     await websocket.accept()
-    current_user = await authenticate_websocket(websocket)
+    try:
+        current_user = await authenticate_websocket(websocket)
+    except Exception as exc:
+        log_websocket_failure("authentication", exc)
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        return
 
     if current_user is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -324,12 +342,13 @@ async def record_progress_websocket(websocket: WebSocket):
 
     disconnect_task: asyncio.Task | None = None
     try:
-        await client.send_json(
-            {
-                "type": "snapshot",
-                "records": await get_user_records_snapshot(current_user.id),
-            }
-        )
+        try:
+            snapshot = await get_user_records_snapshot(current_user.id)
+        except Exception as exc:
+            log_websocket_failure("snapshot", exc)
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+            return
+        await client.send_json({"type": "snapshot", "records": snapshot})
 
         disconnect_task = asyncio.create_task(wait_for_disconnect(websocket))
 

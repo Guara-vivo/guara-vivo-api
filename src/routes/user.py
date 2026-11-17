@@ -1,3 +1,5 @@
+import asyncio
+
 import bcrypt
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -39,6 +41,17 @@ def verify_password(password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
     except ValueError:
         return False
+
+
+# bcrypt takes a few hundred milliseconds by design. Routes must not call the sync helpers above
+# from the event loop: that freezes every other request of the process for the whole check.
+# These run the same helpers (same cost, same result) in a worker thread; bcrypt releases the GIL.
+async def hash_password_async(password: str) -> str:
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, hashed_password: str) -> bool:
+    return await asyncio.to_thread(verify_password, password, hashed_password)
 
 
 # Verified against when the email does not exist, so both paths cost one bcrypt check.
@@ -201,7 +214,7 @@ async def login(
     enforce_rate_limit(login_email_limiter, str(user_login.email).lower())
     db_user = await get_user_by_email(db, str(user_login.email))
 
-    password_ok = verify_password(
+    password_ok = await verify_password_async(
         user_login.password,
         db_user.password if db_user is not None else _DUMMY_PASSWORD_HASH,
     )
@@ -349,7 +362,7 @@ async def update_user(
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if not verify_password(user.current_password, db_user.password):
+    if not await verify_password_async(user.current_password, db_user.password):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
     existing_user = await get_user_by_email(db, str(user.email))
@@ -359,7 +372,7 @@ async def update_user(
     db_user.name = user.name
     db_user.email = str(user.email)
     if user.password is not None:
-        db_user.password = hash_password(user.password)
+        db_user.password = await hash_password_async(user.password)
         # A password change must end every other session.
         await db.execute(
             update(RefreshToken)

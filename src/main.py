@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from routes import user, record, analysis, ibis, map_zones, progress
 from database import AsyncSessionLocal, engine
+from db_errors import register_database_error_handlers
 from models import User
 from middleware import BodyLimitMiddleware
 from refresh_cookie import get_cors_origins
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, **get_fastapi_docs_config())
+register_database_error_handlers(app)
 
 # Add body limit middleware first (processes request stream)
 app.add_middleware(BodyLimitMiddleware)
