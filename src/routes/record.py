@@ -17,7 +17,7 @@ from database import get_db
 from middleware import MAX_REQUEST_BODY_BYTES
 from models import Analysis, AnalysisImage, Ibis, MapZone, Record, RecordMapZone, User
 from rabbitmq import publish_record_for_inference
-from schemas import AnalysisImageRead, AnalysisRead, IbisRead, LinkedMapZoneRead, RecordCreate, normalize_client_uuid, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
+from schemas import AnalysisImageRead, AnalysisRead, IbisRead, LinkedMapZoneRead, MapZoneRecordRead, RecordCreate, normalize_client_uuid, RecordDetailRead, RecordRead, RecordSummaryRead, RecordUpdate
 from security import get_current_user
 from services.map_zone_service import point_inside_zone
 from supabase_storage import MAX_UPLOAD_FILE_BYTES, delete_uploaded_images, is_own_storage_url, upload_public_image
@@ -359,6 +359,40 @@ async def read_record_summaries(
     return set_cached_payload(response, cache_key, payload, current_user.id, token)
 
 
+@router.get("/admin/summary", response_model=list[MapZoneRecordRead])
+async def read_admin_record_summaries(
+    response: Response,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Every user's records, with the author's name, for the admin map (Guara-vivo/documents#70)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    result = await db.execute(
+        select(Record, Analysis, User.name)
+        .outerjoin(Analysis, Analysis.recorder_id == Record.id)
+        .join(User, User.id == Record.user_id)
+        .order_by(Record.id)
+        .offset(skip)
+        .limit(limit)
+    )
+    rows = result.all()
+    zones_by_record = await load_record_map_zones(db, [record.id for record, _analysis, _name in rows])
+    payload = []
+    for record, analysis, author_name in rows:
+        item = serialize_record_summary(record, analysis, zones_by_record.get(record.id, []))
+        item["author_name"] = author_name
+        payload.append(item)
+
+    # Not cached: the worker invalidates only the owner's entries, so a copy kept under the
+    # admin's key would go stale (same reason as another user's `/{id}/detail`).
+    response.headers["Cache-Control"] = "private, no-store"
+    return payload
+
+
 @router.get("/{record_id}/detail", response_model=RecordDetailRead)
 async def read_record_detail(
     record_id: int,
@@ -374,8 +408,9 @@ async def read_record_detail(
 
     token = get_cache_token(current_user.id)
     result = await db.execute(
-        select(Record, Analysis)
+        select(Record, Analysis, User.name)
         .outerjoin(Analysis, Analysis.recorder_id == Record.id)
+        .join(User, User.id == Record.user_id)
         .where(Record.id == record_id)
     )
     row = result.one_or_none()
@@ -383,8 +418,9 @@ async def read_record_detail(
     if row is None:
         raise HTTPException(status_code=404, detail="Record not found")
 
-    record, analysis = row
-    if record.user_id != current_user.id:
+    record, analysis, author_name = row
+    is_foreign = record.user_id != current_user.id
+    if is_foreign and not current_user.is_admin:
         raise HTTPException(status_code=404, detail="Not found")
 
     ibis_items: list[Ibis] = []
@@ -412,6 +448,14 @@ async def read_record_detail(
         image_analyses,
         zones_by_record.get(record.id, []),
     )
+    payload["author_name"] = author_name
+
+    if is_foreign:
+        # An admin reading someone else's record is not cached: the worker invalidates only the
+        # owner's entries, so a copy under the admin's key would go stale for up to the TTL.
+        response.headers["Cache-Control"] = "private, no-store"
+        return payload
+
     return set_cached_payload(response, cache_key, payload, current_user.id, token)
 
 @router.get("/{record_id}", response_model=RecordRead)
