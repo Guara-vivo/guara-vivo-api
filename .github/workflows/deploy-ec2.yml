@@ -54,6 +54,8 @@ jobs:
 
   deploy:
     needs: test
+    # Disparo manual numa feature branch roda só os testes: o deploy usa os secrets de produção.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
