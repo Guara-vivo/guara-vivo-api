@@ -1,4 +1,5 @@
-"""Admins can open the detail of other users' records (Guara-vivo/documents#50).
+"""Admins can open the detail of other users' records (Guara-vivo/documents#50) and list every
+user's records for the map (Guara-vivo/documents#70).
 
 Real HTTP through the ASGI stack with real JWTs, against a throwaway SQLite file so the actual
 SQL runs. The Postgres ARRAY columns are swapped for JSON for the duration of this module only
@@ -45,6 +46,8 @@ R_ALICE = 1
 R_BOB = 2
 R_BOB_CACHE = 3  # only the cache test touches it, so no other test depends on its analysis
 R_ADMIN = 4
+R_BOB_STALE = 5  # only the summary cache test changes its analysis
+R_PENDING = 6  # still waiting for inference: no analysis row yet
 R_MISSING = 9999
 
 ARRAY_COLUMNS = (Record.__table__.c.images, Record.__table__.c.behavior, Analysis.__table__.c.avisos)
@@ -88,10 +91,12 @@ def _seed(sync_engine) -> None:
                 _record(R_BOB, BOB),
                 _record(R_BOB_CACHE, BOB),
                 _record(R_ADMIN, ADMIN),
+                _record(R_BOB_STALE, BOB),
+                _record(R_PENDING, ALICE),
             ]
         )
         session.flush()
-        for record_id in (R_ALICE, R_BOB, R_BOB_CACHE, R_ADMIN):
+        for record_id in (R_ALICE, R_BOB, R_BOB_CACHE, R_ADMIN, R_BOB_STALE):
             session.add(
                 Analysis(
                     ibis_quantity=2,
@@ -99,6 +104,7 @@ def _seed(sync_engine) -> None:
                     recorder_id=record_id,
                 )
             )
+        session.execute(update(Record).where(Record.id == R_PENDING).values(status="pending"))
         session.commit()
 
 
@@ -144,6 +150,12 @@ class AdminRecordDetailTests(unittest.TestCase):
         token = create_access_token(SimpleNamespace(id=user_id, email=f"user{user_id}@example.com"))
         return self.client.get(
             f"/records/{record_id}/detail", headers={"Authorization": f"Bearer {token}"}
+        )
+
+    def admin_summary(self, user_id: int, **params):
+        token = create_access_token(SimpleNamespace(id=user_id, email=f"user{user_id}@example.com"))
+        return self.client.get(
+            "/records/admin/summary", params=params, headers={"Authorization": f"Bearer {token}"}
         )
 
     def set_ibis_quantity(self, record_id: int, quantity: int) -> None:
@@ -207,6 +219,62 @@ class AdminRecordDetailTests(unittest.TestCase):
         second = self.detail(R_BOB_CACHE, ADMIN)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(second.json()["analysis"]["ibis_quantity"], 3)
+
+    # --- admin list of every user's records, for the map (#70) -----------------------------
+
+    def test_admin_summary_lists_every_users_records_with_author(self):
+        response = self.admin_summary(ADMIN)
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row["id"]: row for row in response.json()}
+        self.assertEqual(set(rows), {R_ALICE, R_BOB, R_BOB_CACHE, R_ADMIN, R_BOB_STALE, R_PENDING})
+        self.assertEqual(rows[R_BOB]["author_name"], "Bob")
+        self.assertEqual(rows[R_ALICE]["author_name"], "Alice")
+        self.assertEqual(rows[R_BOB]["ibis_quantity"], 2)
+        self.assertEqual(rows[R_BOB]["latitude_camera"], -12.0)
+
+    def test_admin_summary_includes_records_without_analysis(self):
+        rows = {row["id"]: row for row in self.admin_summary(ADMIN).json()}
+
+        self.assertEqual(rows[R_PENDING]["status"], "pending")
+        self.assertIsNone(rows[R_PENDING]["ibis_quantity"])
+
+    def test_admin_summary_is_404_for_non_admin(self):
+        response = self.admin_summary(ALICE)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("Bob", response.text)
+
+    def test_admin_summary_requires_authentication(self):
+        self.assertEqual(self.client.get("/records/admin/summary").status_code, 401)
+
+    def test_admin_summary_is_paginated_in_a_stable_order(self):
+        first = self.admin_summary(ADMIN, skip=0, limit=2).json()
+        second = self.admin_summary(ADMIN, skip=2, limit=2).json()
+
+        self.assertEqual([row["id"] for row in first], [1, 2])
+        self.assertEqual([row["id"] for row in second], [3, 4])
+
+    def test_admin_summary_rejects_a_limit_above_100(self):
+        self.assertEqual(self.admin_summary(ADMIN, limit=101).status_code, 422)
+
+    def test_admin_summary_does_not_get_stale_after_the_owner_cache_is_invalidated(self):
+        """The worker's NOTIFY invalidates only the OWNER's cache entries, so the admin list
+        must not be served from a copy that the owner's invalidation cannot reach."""
+        before = {row["id"]: row for row in self.admin_summary(ADMIN).json()}
+        self.assertEqual(before[R_BOB_STALE]["ibis_quantity"], 2)
+
+        self.set_ibis_quantity(R_BOB_STALE, 5)
+        invalidate_records_cache(BOB)
+
+        after = {row["id"]: row for row in self.admin_summary(ADMIN).json()}
+        self.assertEqual(after[R_BOB_STALE]["ibis_quantity"], 5)
+
+    def test_summary_of_a_regular_user_still_lists_only_their_own_records(self):
+        token = create_access_token(SimpleNamespace(id=ALICE, email="alice@example.com"))
+        response = self.client.get("/records/summary", headers={"Authorization": f"Bearer {token}"})
+
+        self.assertEqual({row["id"] for row in response.json()}, {R_ALICE, R_PENDING})
 
 
 if __name__ == "__main__":
