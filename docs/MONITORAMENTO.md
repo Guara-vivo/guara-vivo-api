@@ -200,6 +200,7 @@ O RabbitMQ publica as métricas do plugin `rabbitmq_prometheus` na porta 15692, 
 jobs:
   - name: rabbitmq_broker
     url: http://127.0.0.1:15692/metrics
+    autodetection_retry: 60
     selector:
       allow:
         - rabbitmq_queue_messages_ready
@@ -211,6 +212,8 @@ jobs:
 
 - Em Applications, procure `rabbitmq_broker`: `rabbitmq_queue_messages_ready` (esperando), `rabbitmq_queue_messages_unacked` (sendo processados), `rabbitmq_consumers` (1 = worker conectado), `rabbitmq_connections` e `rabbitmq_queues` (2: trabalho e erros). Hoje: 0, 0, 1, 1, 2.
 - O `go.d` só lê o arquivo ao iniciar: `docker exec netdata pkill -x go.d.plugin`.
+- **`autodetection_retry: 60` é obrigatório.** Sem ele, o `go.d` testa o endereço uma única vez ao iniciar e, se falhar, desiste do job até o próximo reinício do plugin. Isso aconteceu no reboot da EC2 de 2026-11-17: o Docker subiu o Netdata e o RabbitMQ no mesmo segundo, o teste das 17:01:20 UTC deu `check failed: ... EOF` (o RabbitMQ só abriu a porta 15692 às 17:01:26) e o coletor ficou parado por quase 5 horas, sem gráficos e sem o alerta `rabbitmq_sem_consumidor`, até ser reiniciado à mão. Com o retry, o job tenta de novo a cada 60 s até o primeiro teste passar. Vale para qualquer job novo que leia algo que sobe depois do Netdata.
+- Depois de um reboot da EC2 ou de recriar o RabbitMQ, confirme que os dados voltaram: em `docker logs netdata`, procure `check success ... job=rabbitmq_broker`, e no painel veja `rabbitmq_consumers` = 1.
 - O coletor `rabbitmq` que o Netdata descobre sozinho continua falhando com `connection refused` (tenta a porta TLS 15671). É só ruído no log; as métricas vêm do coletor acima.
 - Não há alerta de fila acumulada ainda: falta histórico para escolher o limite de espera (o coletor subiu em 2026-11-13).
 
