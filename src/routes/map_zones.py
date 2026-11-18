@@ -66,7 +66,9 @@ async def read_map_zone_records(
 ):
     """Get records linked to a map zone.
 
-    On a nest zone, non-admins only see their own records, and get 404 when they have none.
+    Non-admins only see their own records, in any zone (Guara-vivo/documents#85): the photos,
+    exact camera position and author name of other people are admin-only. On a nest zone they
+    also get 404 when they have none, so the nest's existence is not revealed.
     """
     zone_result = await db.execute(select(MapZone).where(MapZone.id == zone_id))
     zone = zone_result.scalar_one_or_none()
@@ -86,13 +88,14 @@ async def read_map_zone_records(
         )
     )
 
-    if zone.type == NEST_ZONE_TYPE and not current_user.is_admin:
+    if not current_user.is_admin:
         visible_records = visible_records.where(Record.user_id == current_user.id)
-        # Checked apart from the page so that paging past the end is not mistaken for "none".
-        has_own_record = await db.execute(select(visible_records.exists()))
-        if not has_own_record.scalar():
-            # Same answer as a missing zone: do not reveal that this nest exists.
-            raise HTTPException(status_code=404, detail="Zone not found")
+        if zone.type == NEST_ZONE_TYPE:
+            # Checked apart from the page so that paging past the end is not mistaken for "none".
+            has_own_record = await db.execute(select(visible_records.exists()))
+            if not has_own_record.scalar():
+                # Same answer as a missing zone: do not reveal that this nest exists.
+                raise HTTPException(status_code=404, detail="Zone not found")
 
     records_result = await db.execute(
         visible_records

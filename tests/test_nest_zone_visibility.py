@@ -244,15 +244,40 @@ class NestZoneVisibilityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual({item["id"] for item in response.json()}, {R_ALICE_NEST, R_BOB_NEST})
 
-    # --- feeding zones keep today's behavior -----------------------------------------------
+    # --- feeding zones: non-admins only see their own records (issue #85) --------------------
 
-    def test_feeding_zone_records_stay_visible_to_every_user(self):
-        for user_id in (ADMIN, ALICE, CAROL):
+    def test_non_admin_sees_only_their_own_records_in_a_feeding_zone(self):
+        for user_id, expected in ((ALICE, {R_ALICE_FEEDING}), (BOB, {R_BOB_FEEDING})):
             response = self.get(f"/map-zones/{FEEDING}/records", user_id)
+
             self.assertEqual(response.status_code, 200, user_id)
+            self.assertEqual({item["id"] for item in response.json()}, expected, user_id)
             self.assertEqual(
-                {item["id"] for item in response.json()}, {R_ALICE_FEEDING, R_BOB_FEEDING}, user_id
+                {item["user_id"] for item in response.json()}, {user_id}, user_id
             )
+
+    def test_non_admin_feeding_zone_response_leaks_nothing_from_other_users(self):
+        response = self.get(f"/map-zones/{FEEDING}/records", ALICE)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(f"{R_BOB_FEEDING}.jpg", response.text)
+        self.assertNotIn(str(-10.0 - R_BOB_FEEDING), response.text)
+        self.assertNotIn("Bob", response.text)
+
+    def test_non_admin_without_records_in_a_feeding_zone_gets_an_empty_list(self):
+        # The feeding zone itself is public (it is in GET /map-zones/), so no 404 here.
+        response = self.get(f"/map-zones/{FEEDING}/records", CAROL)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_admin_sees_every_record_in_a_feeding_zone(self):
+        response = self.get(f"/map-zones/{FEEDING}/records", ADMIN)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            {item["id"] for item in response.json()}, {R_ALICE_FEEDING, R_BOB_FEEDING}
+        )
 
 
 if __name__ == "__main__":
