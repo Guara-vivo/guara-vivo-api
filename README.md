@@ -65,7 +65,7 @@ Edite o `.env`. O mínimo para rodar é:
 
 | Variável | Para quê |
 | --- | --- |
-| `DATABASE_URL` | Conexão PostgreSQL (`postgresql://usuario:senha@host:5432/banco`) |
+| `DATABASE_URL` | Conexão PostgreSQL (`postgresql://usuario:senha@host:5432/banco`). Em produção, termine com `?sslmode=require` para exigir TLS (use `sslmode`, não `ssl`) |
 | `JWT_SECRET_KEY` | Segredo dos tokens. Gere com `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `RABBITMQ_HOST` | Use `localhost` ao rodar fora do Docker (o exemplo vem com `rabbitmq`) |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Opcionais: criam o usuário admin na primeira subida (os dois juntos) |
