@@ -37,8 +37,13 @@ cd "${DEPLOY_ROOT}/${API_REPO}"
 
 chmod 600 "${ENV_FILE}"
 
-docker compose --env-file "${ENV_FILE}" config --quiet
-docker compose --env-file "${ENV_FILE}" up -d --build --remove-orphans
+docker compose --env-file "${ENV_FILE}" --profile migrate config --quiet
+# Build first so `run` uses the new code (it would reuse a stale image otherwise), then migrate with the
+# owner's credentials before the API and worker start on the new schema. A failed migration stops the
+# deploy here and the running containers are left as they were.
+docker compose --env-file "${ENV_FILE}" --profile migrate build
+docker compose --env-file "${ENV_FILE}" --profile migrate run --rm migrate
+docker compose --env-file "${ENV_FILE}" up -d --remove-orphans
 docker image prune -f
 docker compose --env-file "${ENV_FILE}" ps
 

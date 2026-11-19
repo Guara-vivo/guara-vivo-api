@@ -39,7 +39,7 @@ python src/main.py
 - Keep `.env.docker-compose.example` versioned as a safe template with placeholder values only.
 - Start the stack with `docker compose --env-file .env.docker-compose up --build`.
 - Validate the stack with `docker compose --env-file .env.docker-compose config`, but do not share that output because it expands secrets.
-- The API service runs `alembic upgrade head` before starting `uvicorn`.
+- Migrations run in the one-off `migrate` service (profile `migrate`, `docker compose --env-file .env.docker-compose --profile migrate run --rm migrate`), as the table owner through `MIGRATION_DATABASE_URL` (falls back to `DATABASE_URL`). The `api` service only starts `uvicorn`. `scripts/deploy-ec2.sh` runs `build`, then `migrate`, then `up`; a failed migration stops the deploy before the running containers are touched. Locally, run the `migrate` service (or `alembic upgrade head`) before `up` when there are new migrations.
 - The `api` and `worker` services depend on RabbitMQ health, not on a local database container.
 
 ## Database
@@ -56,13 +56,31 @@ python src/main.py
 - Do not enable `echo=True` in normal execution because it logs SQL and can expose sensitive data.
 - Tables are managed through Alembic migrations. Startup does not auto-create tables.
 
+## Database Roles
+
+Migration `20261119_0021` creates least-privilege roles (Guara-vivo/documents#63). Each service has its own URL:
+
+| Variable | Role | Used by | Can |
+| --- | --- | --- | --- |
+| `MIGRATION_DATABASE_URL` | owner (`postgres` on Supabase) | `migrate` service (Alembic) | DDL; bypasses RLS |
+| `DATABASE_URL` | `guara_api` | `api` (engine and progress LISTEN) | SELECT/INSERT/UPDATE/DELETE on the 8 app tables in `public`; no DDL, no `alembic_version`, no other schema |
+| `WORKER_DATABASE_URL` | `guara_worker` | `worker` | `records`: SELECT + UPDATE (`status`, `analysis_progress`); `analyses`: SELECT/INSERT/UPDATE; `analysis_images`, `ibis`: SELECT/INSERT/DELETE; nothing on `users`, `refresh_tokens`, zones |
+
+- Both empty fallbacks point at `DATABASE_URL`, so before the switch everything keeps running as the owner. After the switch `DATABASE_URL` is no longer the owner, so `MIGRATION_DATABASE_URL` must be set or `migrate` fails (no DDL).
+- The migration creates the roles `NOLOGIN` and without a password. Login is enabled outside git, as the owner: `ALTER ROLE guara_api LOGIN PASSWORD '<random>'` (same for `guara_worker`). Through Supabase's pooler (Supavisor, port 5432, session mode), the user name is `guara_api.<project-ref>`, like `postgres.<project-ref>`. Keep `?sslmode=require`.
+- RLS stays on, with one permissive policy `USING (true)` per role and table (`guara_api_all`, `guara_worker_all`): only these roles get through RLS, and per-route owner checks still decide which rows a user sees. Without the policy a role sees zero rows (no error), so a table that gets RLS enabled needs these policies too.
+- `anon` and `authenticated` (Supabase's Data API/PostgREST, unused by the app; uploads go through Storage with the service role key) have no privileges on `public`, and the owner's default privileges no longer grant them new tables.
+- New tables and sequences created by the owner are granted to `guara_api` automatically (default privileges). The worker gets nothing automatically: a new table it writes needs a GRANT (and a policy if RLS is on) in the migration, and `WORKER_TABLE_GRANTS` in `20261119_0021` documents what it has. Keep it aligned with the SQL in `guara-vivo-worker/main.py`.
+- Foreign-key cascades (deleting a record) run as the table owner, so `guara_api` does not need extra grants for them.
+- Rollback: point `DATABASE_URL` and `WORKER_DATABASE_URL` back to the owner's URL (or empty the worker one) and redeploy. `alembic downgrade 20261112_0020` drops the roles and gives `anon`/`authenticated` their default grants back; switch the services first.
+
 ## Migrations
 
 - Use Alembic for persistent schema changes.
 - Apply migrations with `alembic upgrade head` before starting the API.
 - Create a migration after model changes with `alembic revision --autogenerate -m "message"`, then review the generated file before applying it.
 - Initial schema migration is in `migrations/versions/20260516_0001_initial_schema.py`.
-- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007` -> `20260520_0008` -> `20260526_0009` -> `20260603_0010` -> `20260604_0011` -> `20260605_0012` -> `20260606_0013` -> `20260606_0014` -> `20260607_0015` -> `20260608_0016` -> `20260609_0017` -> `20260610_0018` -> `20261112_0019` -> `20261112_0020` (head).
+- Current migration chain is `20260516_0001` -> `20260517_0002` -> `d3a87201af95` -> `269cbb5d99ef` -> `20260517_0003` -> `20260517_0004` -> `20260517_0005` -> `20260518_0006` -> `20260518_0007` -> `20260520_0008` -> `20260526_0009` -> `20260603_0010` -> `20260604_0011` -> `20260605_0012` -> `20260606_0013` -> `20260606_0014` -> `20260607_0015` -> `20260608_0016` -> `20260609_0017` -> `20260610_0018` -> `20261112_0019` -> `20261112_0020` -> `20261119_0021` (head).
 - `20260517_0002_remove_analysis_unused_fields.py` removes `flock_size`, `latitude`, and `longitude` from `analyses`.
 - `d3a87201af95_add_status_column_to_records_table.py` adds `records.status` with idempotent logic to handle both initial schema creation and migration scenarios. Backfills existing rows to `pending` and makes the column `NOT NULL`.
 - `269cbb5d99ef_add_password_column_to_users_table.py` adds required `users.password`, backfills existing users with the bcrypt hash for `admin123`, and makes it `NOT NULL`.
@@ -84,6 +102,8 @@ python src/main.py
 - `20260610_0018_add_analysis_image_dimensions.py` adds nullable `analysis_images.image_width`/`image_height` (pixel space of `bbox_xyxy`, from the identifier's per-image `image_width`/`image_height`). `AnalysisImageRead` exposes them; null for older rows. Run the migration before deploying the worker (it inserts the columns). `scripts/backfill_image_dimensions.py <record_ids> [--apply]` fills old records.
 - `20261112_0019_add_refresh_token_session_kind.py` adds `refresh_tokens.session_kind` (`varchar(16)`, `NOT NULL`, server default `mobile`), so existing tokens count as mobile sessions (PostgreSQL only, like the other recent revisions).
 - `20261112_0020_add_user_is_active.py` adds `users.is_active` (`boolean`, `NOT NULL`, server default `true`, PostgreSQL only), so existing users stay active. It is flipped directly in the database, there is no endpoint: `update users set is_active = false where email = '...'`. A deactivated account cannot log in (same 401 `Incorrect email or password` as a wrong password, so it cannot be told apart), its access token stops working on the next request (`get_user_from_access_token` reads the user every time, which also covers the progress websocket on connect) and `POST /users/refresh` answers 401. Its refresh tokens are not revoked, so setting it back to `true` restores the session. Records and other data are untouched.
+- `20261119_0021_least_privilege_roles.py` creates the `guara_api` and `guara_worker` roles (NOLOGIN), their grants and RLS policies, default privileges for future tables, and revokes `anon`/`authenticated` on `public` (PostgreSQL only; see Database Roles). Idempotent; the downgrade drops the roles and restores the Supabase default grants.
+- A fresh database does not get past `d3a87201af95` with the current Alembic (`op.get_context().reflection` no longer exists); existing databases are past it. To test migrations locally, create the schema from the models, enable RLS, `alembic stamp` the previous revision and upgrade from there.
 - If an existing database already has the initial tables but no Alembic version, stamp the baseline first with `alembic stamp 20260516_0001`, then run `alembic upgrade head`.
 - Alembic remains synchronous and reads `DATABASE_URL` from process env or `.env` through `src/database.py`.
 - Keep Alembic on the sync PostgreSQL driver (`postgresql+psycopg2://` or compatible); the API runtime converts to `postgresql+asyncpg://` for async sessions.
@@ -163,7 +183,7 @@ python src/seed.py
 
 ## Environment
 
-- `DATABASE_URL` is required and must point to PostgreSQL.
+- `DATABASE_URL` is required and must point to PostgreSQL. In production it is the `guara_api` role; `MIGRATION_DATABASE_URL` (owner, Alembic) and `WORKER_DATABASE_URL` (`guara_worker`) are optional and fall back to it (see Database Roles).
 - In Docker, `DATABASE_URL` must point to Supabase or another external PostgreSQL database.
 - `JWT_SECRET_KEY` is required before issuing or validating JWTs. Generate it with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 - `ADMIN_EMAIL` and `ADMIN_PASSWORD` configure the startup admin seed. If set, the API creates an admin user on first startup if no user exists. Both must be provided together or both omitted.
@@ -263,7 +283,7 @@ Tests live in `tests/` and run with `pytest` (also in CI before deploy). Files: 
 - `database.db` was removed and is ignored.
 - Local Docker Compose includes RabbitMQ but no database container.
 - Routes use separate create/update/read schemas instead of SQLModel table models directly.
-- Schema reference as of Alembic head `20261112_0020` (details per revision in Migrations; `refresh_tokens.session_kind` is `mobile|web|web_session`): `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and atomic rotation, and key lookup indexes exist.
+- Schema reference as of Alembic head `20261119_0021` (details per revision in Migrations; `refresh_tokens.session_kind` is `mobile|web|web_session`): `analyses` no longer has unused location/flock fields, `analyses.recorder_id` is unique, `analysis_images` stores image-level inference results, `ibis.analysis_image_id` links detections to images, `records.status` exists with existing rows set to `pending`, `records.images` is `varchar[]`, `users.password` is required, `users.email` is unique, all datetime columns are timezone-aware (UTC), `refresh_tokens` table exists for JWT refresh token persistence and atomic rotation, and key lookup indexes exist.
 - **Plan Mode**: During planning phases, only generate plans and architecture. Do not output code blocks or file modifications. Wait for explicit implementation command before making any changes.
 
 ## Hardening Notes (2026-06)
