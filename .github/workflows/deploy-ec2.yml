@@ -85,6 +85,10 @@ jobs:
       - name: Create production env file
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Optional until the least-privilege roles are switched on (Guara-vivo/documents#63); empty
+          # means docker-compose.yml falls back to DATABASE_URL.
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          WORKER_DATABASE_URL: ${{ secrets.WORKER_DATABASE_URL }}
           JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
           JWT_ACCESS_TOKEN_EXPIRE: ${{ secrets.JWT_ACCESS_TOKEN_EXPIRE }}
           JWT_REFRESH_TOKEN_EXPIRE: ${{ secrets.JWT_REFRESH_TOKEN_EXPIRE }}
@@ -166,6 +170,8 @@ jobs:
 
           cat > .env.deploy <<EOF
           DATABASE_URL=${DATABASE_URL}
+          MIGRATION_DATABASE_URL=${MIGRATION_DATABASE_URL}
+          WORKER_DATABASE_URL=${WORKER_DATABASE_URL}
           APP_ENV=${APP_ENV}
           JWT_SECRET_KEY=${JWT_SECRET_KEY}
           JWT_ACCESS_TOKEN_EXPIRE=${JWT_ACCESS_TOKEN_EXPIRE}
