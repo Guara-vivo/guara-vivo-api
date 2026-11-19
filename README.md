@@ -34,12 +34,13 @@ guara-vivo/
 cd guara-vivo-api
 cp .env.docker-compose.example .env.docker-compose   # no PowerShell: copy
 # edite .env.docker-compose: DATABASE_URL, JWT_SECRET_KEY, chaves do Supabase, senha do RabbitMQ...
+docker compose --env-file .env.docker-compose --profile migrate run --rm --build migrate   # aplica as migrations
 docker compose --env-file .env.docker-compose up --build
 ```
 
 - API: http://localhost:8001 (documentação interativa em `/docs`)
 - RabbitMQ (painel): http://localhost:15672
-- As migrations rodam sozinhas antes da API subir.
+- As migrations **não** rodam ao subir a API: rode o serviço `migrate` (primeira linha acima) quando houver migration nova. No deploy, o `scripts/deploy-ec2.sh` faz isso antes do `up`.
 - O banco **não** sobe no Compose: use a `DATABASE_URL` do Supabase.
 - O build do identifier copia o arquivo `yolo11x-seg.pt`, que não está no Git. Coloque-o na raiz de `guara-vivo-identifier/` antes do build (veja o README dele).
 
@@ -70,6 +71,7 @@ Edite o `.env`. O mínimo para rodar é:
 | `RABBITMQ_HOST` | Use `localhost` ao rodar fora do Docker (o exemplo vem com `rabbitmq`) |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Opcionais: criam o usuário admin na primeira subida (os dois juntos) |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Necessárias só para upload de fotos |
+| `MIGRATION_DATABASE_URL`, `WORKER_DATABASE_URL` | Opcionais: URL do dono do banco para as migrations e do papel `guara_worker` para o worker. Vazias, usam a `DATABASE_URL`. Em produção a `DATABASE_URL` é o papel `guara_api` (ver *Database Roles* no `AGENTS.md`) |
 | `DATABASE_STATEMENT_TIMEOUT_SECONDS` | Opcional (padrão `30`): o Postgres cancela consultas mais longas e a API responde `503`. `0` deixa o padrão do banco |
 
 Aplique as migrations e suba a API:

@@ -44,7 +44,27 @@ services:
     # ranges (172.16.0.0/12): it survives the network being recreated with another subnet, and an address from
     # the internet can't forge it. Do not go back to '*': every client would be able to pick its own
     # rate-limit key. If this is too narrow, every client shows up as the proxy and the limits become one counter.
-    command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8001 --proxy-headers --forwarded-allow-ips='172.16.0.0/12'"
+    #
+    # Migrations do not run here: the `migrate` service below runs them before the API starts, with
+    # the owner's credentials, so this container only holds the least-privilege `guara_api` URL.
+    command: sh -c "uvicorn src.main:app --host 0.0.0.0 --port 8001 --proxy-headers --forwarded-allow-ips='172.16.0.0/12'"
+    networks:
+      - guara-vivo-network
+
+  # One-off: `docker compose --profile migrate run --rm migrate` (scripts/deploy-ec2.sh runs it before
+  # `up`). Applies Alembic migrations as the table owner (DDL), through MIGRATION_DATABASE_URL. Until that
+  # is set it falls back to DATABASE_URL, which works only while DATABASE_URL is still the owner's.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - migrate
+    restart: "no"
+    environment:
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:-${DATABASE_URL}}
+      PYTHONPATH: /app/src
+    command: alembic upgrade head
     networks:
       - guara-vivo-network
 
@@ -72,7 +92,8 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      # Least-privilege `guara_worker` role; falls back to DATABASE_URL until WORKER_DATABASE_URL is set.
+      DATABASE_URL: ${WORKER_DATABASE_URL:-${DATABASE_URL}}
       RABBITMQ_HOST: ${RABBITMQ_HOST}
       RABBITMQ_PORT: ${RABBITMQ_PORT}
       RABBITMQ_USER: ${RABBITMQ_USER}
