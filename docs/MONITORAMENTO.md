@@ -1,6 +1,6 @@
 # Monitoramento e alertas
 
-Como saber se a API e o servidor estão bem, onde ver e o que fazer quando um alerta chega. Foi montado na issue [Guara-vivo/documents#61](https://github.com/Guara-vivo/documents/issues/61). Última revisão: 2026-11-12.
+Como saber se a API e o servidor estão bem, onde ver e o que fazer quando um alerta chega. Foi montado na issue [Guara-vivo/documents#61](https://github.com/Guara-vivo/documents/issues/61). Última revisão: 2026-11-19 (gráficos por contêiner e alerta de fila parada, [documents#73](https://github.com/Guara-vivo/documents/issues/73)).
 
 ## Visão geral
 
@@ -9,7 +9,7 @@ Duas camadas, uma de fora e uma de dentro do servidor:
 | Camada | Ferramenta | O que vigia | Como avisa |
 |---|---|---|---|
 | De fora | UptimeRobot (plano grátis) | `https://api.guaravivo.com.br/health` e `https://guaravivo.com.br`, a cada 5 minutos | E-mail |
-| De dentro | Netdata Cloud (plano grátis) | CPU, memória, disco, contêineres, rajadas de respostas 5xx da API (pelo log do Caddy) e se o servidor some do Cloud | E-mail (Critical, Warning e Unreachable) |
+| De dentro | Netdata Cloud (plano grátis) | CPU, memória, disco, contêineres (estado e CPU/memória de cada um), fila do RabbitMQ, rajadas de respostas 5xx da API (pelo log do Caddy) e se o servidor some do Cloud | E-mail (Critical, Warning e Unreachable) |
 
 O UptimeRobot responde "a API está de pé para quem usa?". O Netdata responde "o servidor está saudável por dentro?". Um não substitui o outro.
 
@@ -30,7 +30,7 @@ Os e-mails ficam nas contas, não neste arquivo. Se mais alguém precisar recebe
 
 ## Alertas ativos e limites
 
-Exceto os três marcados como "alerta próprio", são os alertas padrão do Netdata, sem alteração:
+Exceto os quatro marcados como "alerta próprio", são os alertas padrão do Netdata, sem alteração:
 
 | O quê | Avisa quando |
 |---|---|
@@ -41,6 +41,8 @@ Exceto os três marcados como "alerta próprio", são os alertas padrão do Netd
 | Contêiner parado (`docker_container_not_running`, alerta próprio) | Warning quando um contêiner passa mais da metade dos últimos 3 minutos parado (`exited`) ou reiniciando (`restarting`); vale para todos os contêineres |
 | API com muitos 5xx (`api_5xx_burst`, alerta próprio) | Warning quando o Caddy devolve 10 ou mais respostas 5xx nos últimos 10 minutos (inclui os 502 de quando a API está fora e os 5xx que a própria API devolve) |
 | Worker sem consumir (`rabbitmq_sem_consumidor`, alerta próprio) | Warning quando a média de consumidores da fila nos últimos 3 minutos fica abaixo de 0,5, ou seja, o worker está sem conexão com o RabbitMQ (mesmo com o contêiner de pé) |
+| Fila parada (`rabbitmq_fila_parada`, alerta próprio) | Warning quando a fila de trabalho (`guara-vermelho-inference`) não esvazia nenhuma vez em 15 minutos (o menor número de mensagens prontas na janela fica acima de 0): worker lento, travado ou sem dar conta |
+| CPU e memória de um contêiner (`cgroup_10min_cpu_usage`, `cgroup_ram_in_use`) | Alertas padrão por contêiner: média de 10 minutos de CPU alta, ou memória perto do teto do contêiner |
 | Outros | `oom_kill`, uso de swap, `load_average_*`, previsão de disco/inodes acabando |
 | Servidor | Nó some do Cloud (Unreachable) |
 
@@ -83,6 +85,12 @@ Para referência: os contêineres têm teto de memória no `docker-compose.yml` 
 - Veja também o gráfico `rabbitmq_queue_messages_ready` (mensagens esperando): se está subindo, os registros estão acumulando. Se o RabbitMQ está `healthy` e o worker reiniciou, ele volta sozinho.
 - Um reinício de deploy não dispara o alerta: a média de 3 minutos absorve os segundos de reconexão.
 
+**Fila parada (Netdata, `rabbitmq_fila_parada`)**
+
+- Significa que ficou mensagem esperando na fila de trabalho por 15 minutos seguidos: os registros estão demorando para ser analisados. Normalmente a fila esvazia em segundos (de 13 a 19 de novembro ela nunca passou de 0 numa coleta).
+- Veja primeiro se o alerta `rabbitmq_sem_consumidor` também chegou (worker desconectado). Se não, o worker está conectado mas lento ou preso num job: `docker logs guara-vivo-api-worker-1` e o gráfico `rabbitmq_queue_messages_unacked` da fila de trabalho (1 = processando um registro). O CPU e a memória do `identifier` e do `worker` (gráficos por contêiner) mostram se a inferência está pesada.
+- Muitos registros enviados de uma vez (por exemplo, um celular sincronizando uma saída de campo inteira) também podem disparar; se a fila estiver diminuindo, é só esperar.
+
 **Servidor "Unreachable" no Netdata**
 
 - A EC2 pode estar desligada ou sem rede, ou o Netdata parou. Veja o estado da instância no console da AWS e tente o SSH.
@@ -92,6 +100,8 @@ Para referência: os contêineres têm teto de memória no `docker-compose.yml` 
 - **Job do worker pendurado:** o healthcheck do worker mede se o laço do RabbitMQ responde, não se o job está andando. Um job travado (por exemplo, uma chamada ao banco sem timeout) mantém o worker `healthy` até o `consumer_timeout` do broker (~30 min). Foi uma escolha para não alarmar por inferência lenta ([documents#71](https://github.com/Guara-vivo/documents/issues/71)).
 - **Erros da aplicação:** só rajadas de 5xx (10 ou mais em 10 minutos) avisam. Um erro isolado, os 4xx (401/403/422/429, cheios de robôs no 404) e a causa do erro não aparecem: para isso, `docker logs` e o painel do Supabase. A captura com Sentry (opcional na #61) foi adiada: avaliada a opção de uma inicialização mínima, sem corpo de requisição nem dados pessoais e com limitador de eventos, ficou para quando o log se mostrar insuficiente.
 - **Vencimento do certificado:** o aviso antecipado é só em plano pago do UptimeRobot. O Caddy renova sozinho; se um dia o certificado vencer, o monitor HTTP falha e o alerta chega, só que sem antecedência.
+- **Fila parada e alertas por contêiner:** carregados em 2026-11-19, ainda não vistos disparando de verdade.
+- **Fila de erros:** registro cuja análise falhou vai para `guara-vermelho-inference-error`, que ninguém consome; não há alerta para isso (o gráfico por fila mostra quantos há).
 - **Testes reais de queda:** derrubar a API de propósito (UptimeRobot, critério de aceite da #61) e parar o worker de propósito (Netdata, critério da #71) ainda não foram feitos em horário combinado. O alerta de contêiner parado foi testado com contêineres descartáveis em 2026-11-12 (chegou o e-mail do contêiner parado e do que reinicia em ciclo; a parada de 20 s não alertou).
 
 ## Detalhes e cuidados
@@ -121,12 +131,34 @@ docker run -d --name=netdata \
   -v /etc/group:/host/etc/group:ro \
   -v /etc/localtime:/etc/localtime:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v /proc:/host/proc:ro \
+  -v /sys:/host/sys:ro \
   --restart unless-stopped \
   --cap-add SYS_PTRACE \
   --security-opt apparmor=unconfined \
   --security-opt label=disable \
   netdata/netdata:stable
 ```
+
+- **Não tire `-v /proc:/host/proc:ro` e `-v /sys:/host/sys:ro`.** Sem eles o Netdata não enxerga os cgroups dos contêineres (`/host/sys/fs/cgroup`) e não há gráficos de CPU e memória por contêiner; foi o que faltou até 2026-11-19 ([documents#73](https://github.com/Guara-vivo/documents/issues/73)). Com eles aparecem os gráficos `cgroup_<contêiner>` (api, worker, identifier, rabbitmq e netdata) e os alertas padrão por contêiner. Não precisou de `--cgroupns=host`.
+- `--security-opt label=disable` o Docker já põe sozinho por causa do `--pid=host`; deixar no comando não muda nada.
+- Durante a troca, o alerta de contêiner parado avisa do contêiner antigo renomeado e parado (`netdata-old`) se ele ficar parado por mais de uns 2 minutos. Remova o antigo (`docker rm netdata-old`) assim que o novo estiver saudável e online no Cloud.
+
+**Coletores desligados (`/etc/netdata/go.d.conf`)**
+
+O arquivo vive só no volume `netdataconfig`. É uma cópia de `/usr/lib/netdata/conf.d/go.d.conf` com duas linhas embaixo de `modules:` trocadas de `#  <nome>: yes` para `  <nome>: no`:
+
+- `rabbitmq`: o coletor que o Netdata descobre sozinho pelo Docker falhava sempre (porta TLS 15671 recusada; depois, 401 na 15672 por não ter senha) e só fazia ruído no log. As métricas vêm do coletor `prometheus` (abaixo).
+- `smbios_memory`: com o `/sys` do host montado, ele passou a ligar o alerta padrão `smbios_memory_comparison_unavailable` (Warning por e-mail). Numa VM da EC2 não há inventário de memória do firmware para comparar, então seria um Warning permanente.
+
+Para recriar:
+
+```bash
+docker exec netdata sh -c "cp /usr/lib/netdata/conf.d/go.d.conf /etc/netdata/go.d.conf && sed -i -e 's/^#  rabbitmq: yes/  rabbitmq: no/' -e 's/^#  smbios_memory: yes/  smbios_memory: no/' /etc/netdata/go.d.conf"
+docker exec netdata pkill -x go.d.plugin
+```
+
+Por ser cópia, ela não acompanha mudanças do arquivo padrão em atualizações do Netdata; se um dia der problema, apague a cópia e refaça o comando.
 
 **Alerta de contêiner parado (arquivo próprio no Netdata)**
 
@@ -194,7 +226,7 @@ template: api_5xx_burst
 
 O RabbitMQ publica as métricas do plugin `rabbitmq_prometheus` na porta 15692, e o `docker-compose.yml` a expõe só em `127.0.0.1:15692` (Guara-vivo/guara-vivo-api#28), como a 5672 e a 15672. O Netdata, na rede do host, lê esse endereço, que não muda quando o contêiner é recriado. O endpoint não tem senha e só traz contagens (sem mensagens nem credenciais).
 
-`/etc/netdata/go.d/prometheus.conf` (guarda só 5 séries; o endpoint inteiro tem ~800):
+`/etc/netdata/go.d/prometheus.conf` (o job `rabbitmq_broker` guarda só 5 séries, somadas para todas as filas; o endpoint inteiro tem ~800. O job `rabbitmq_filas` lê `/metrics/per-object`, que separa por fila, e guarda só 2 métricas):
 
 ```yaml
 jobs:
@@ -208,14 +240,21 @@ jobs:
         - rabbitmq_consumers
         - rabbitmq_connections
         - rabbitmq_queues
+  - name: rabbitmq_filas
+    url: http://127.0.0.1:15692/metrics/per-object
+    autodetection_retry: 60
+    selector:
+      allow:
+        - rabbitmq_queue_messages_ready
+        - rabbitmq_queue_messages_unacked
 ```
 
 - Em Applications, procure `rabbitmq_broker`: `rabbitmq_queue_messages_ready` (esperando), `rabbitmq_queue_messages_unacked` (sendo processados), `rabbitmq_consumers` (1 = worker conectado), `rabbitmq_connections` e `rabbitmq_queues` (2: trabalho e erros). Hoje: 0, 0, 1, 1, 2.
 - O `go.d` só lê o arquivo ao iniciar: `docker exec netdata pkill -x go.d.plugin`.
 - **`autodetection_retry: 60` é obrigatório.** Sem ele, o `go.d` testa o endereço uma única vez ao iniciar e, se falhar, desiste do job até o próximo reinício do plugin. Isso aconteceu no reboot da EC2 de 2026-11-17: o Docker subiu o Netdata e o RabbitMQ no mesmo segundo, o teste das 17:01:20 UTC deu `check failed: ... EOF` (o RabbitMQ só abriu a porta 15692 às 17:01:26) e o coletor ficou parado por quase 5 horas, sem gráficos e sem o alerta `rabbitmq_sem_consumidor`, até ser reiniciado à mão. Com o retry, o job tenta de novo a cada 60 s até o primeiro teste passar. Vale para qualquer job novo que leia algo que sobe depois do Netdata.
 - Depois de um reboot da EC2 ou de recriar o RabbitMQ, confirme que os dados voltaram: em `docker logs netdata`, procure `check success ... job=rabbitmq_broker`, e no painel veja `rabbitmq_consumers` = 1.
-- O coletor `rabbitmq` que o Netdata descobre sozinho continua falhando com `connection refused` (tenta a porta TLS 15671). É só ruído no log; as métricas vêm do coletor acima.
-- Não há alerta de fila acumulada ainda: falta histórico para escolher o limite de espera (o coletor subiu em 2026-11-13).
+- `rabbitmq_filas` gera um gráfico por fila (label `queue`): `guara-vermelho-inference` (trabalho) e `guara-vermelho-inference-error` (registros cuja análise falhou; o worker publica nela e ninguém consome, então o número só sobe). Em `docker logs netdata`, procure `check success ... job=rabbitmq_filas`.
+- O coletor `rabbitmq` que o Netdata descobre sozinho está desligado (veja "Coletores desligados").
 
 `/etc/netdata/health.d/rabbitmq-consumidor.conf` (depois de criar ou mudar: `docker exec netdata netdatacli reload-health`):
 
@@ -232,6 +271,26 @@ template: rabbitmq_sem_consumidor
 ```
 
 - Carregado e `CLEAR` (consumidores = 1) em 2026-11-13; ainda não visto disparando de verdade (exigiria parar o worker, o que entra no teste real da #71: o alerta de consumidor e o de contêiner parado devem chegar).
+
+`/etc/netdata/health.d/fila-acumulada.conf` (depois de criar ou mudar: `docker exec netdata netdatacli reload-health`):
+
+```
+template: rabbitmq_fila_parada
+      on: prometheus.rabbitmq_filas.rabbitmq_queue_messages_ready
+chart labels: queue=guara-vermelho-inference
+  lookup: min -15m unaligned
+   every: 1m
+    warn: $this > 0
+   delay: down 5m
+ summary: Fila do RabbitMQ sem esvaziar
+    info: Menor numero de mensagens prontas na fila de trabalho nos ultimos 15 minutos; acima de 0 significa que a fila nao esvaziou nenhuma vez (worker lento ou travado)
+      to: sysadmin
+```
+
+- Por que "não esvaziou" e não "passou de N mensagens": de 13 a 19 de novembro, o máximo de mensagens prontas numa coleta foi 0 e o de `unacked` foi 1 (o worker pega um registro por vez e a fila esvazia antes da coleta seguinte, de 10 s). Sem histórico de picos, um limite fixo seria chute. O mínimo da janela só fica acima de 0 se houve mensagem esperando em todas as coletas dos 15 minutos.
+- **Só a fila de trabalho** (`chart labels`). Não use o gráfico somado do job `rabbitmq_broker`: ele inclui a fila de erros, que ninguém consome, e a primeira análise que falhasse deixaria o alerta ligado para sempre.
+- Com o worker parado, este alerta chega cerca de 15 minutos depois do `rabbitmq_sem_consumidor`, e só se chegar registro nesse meio tempo.
+- Fica `UNINITIALIZED` nos primeiros 15 minutos depois de o coletor subir. Carregado em 2026-11-19; ainda não visto disparando de verdade.
 
 ## Como testar o caminho do alerta
 
