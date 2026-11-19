@@ -47,6 +47,7 @@ python src/main.py
 - PostgreSQL is required. The app must fail fast if `DATABASE_URL` is missing or is not PostgreSQL.
 - Supabase is the current PostgreSQL provider; set the Supabase connection string in `.env` or `.env.docker-compose`.
 - Valid URL prefixes: `postgres://`, `postgresql://`, `postgresql+psycopg2://`.
+- Require TLS with libpq's `?sslmode=require` in `DATABASE_URL` (not asyncpg's `ssl=`). Alembic (psycopg2) and the progress LISTEN connection (`asyncpg.connect(dsn)`) read `sslmode` as is; for the SQLAlchemy async engine `asyncpg_engine_url` in `src/database.py` renames it to `ssl`, because the asyncpg dialect passes query parameters as keywords to `asyncpg.connect`, and `sslmode` there fails with `TypeError` at startup. The worker uses psycopg2 and also reads `sslmode` as is.
 - SQLite is not supported by default and `database.db` must not be committed.
 - Do not reintroduce a local Postgres container unless explicitly requested.
 - PostgreSQL needs `psycopg2-binary` for Alembic and `asyncpg` for the async API runtime.
