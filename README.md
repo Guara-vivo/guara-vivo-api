@@ -70,6 +70,7 @@ Edite o `.env`. O mínimo para rodar é:
 | `RABBITMQ_HOST` | Use `localhost` ao rodar fora do Docker (o exemplo vem com `rabbitmq`) |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Opcionais: criam o usuário admin na primeira subida (os dois juntos) |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Necessárias só para upload de fotos |
+| `DATABASE_STATEMENT_TIMEOUT_SECONDS` | Opcional (padrão `30`): o Postgres cancela consultas mais longas e a API responde `503`. `0` deixa o padrão do banco |
 
 Aplique as migrations e suba a API:
 
@@ -86,14 +87,16 @@ Pronto: http://localhost:8001/docs (a documentação some se `APP_ENV=production
 
 ## Testes
 
-Não precisam de banco nem de RabbitMQ de verdade.
+Não precisam de banco nem de RabbitMQ de verdade. Alguns rodam a API de ponta a ponta contra um arquivo SQLite descartável, por isso o `aiosqlite` (o CI instala os dois).
 
 ```powershell
-pip install pytest
+pip install pytest aiosqlite
 $env:DATABASE_URL = "postgresql://user:password@localhost:5432/test"   # Linux/macOS: export
 $env:JWT_SECRET_KEY = "teste-local"
 python -m pytest -q
 ```
+
+No GitHub, a suíte roda em todo pull request para `develop` ou `main` (`.github/workflows/tests.yml`, sem segredos e sem deploy). O deploy no servidor (`deploy-ec2.yml`) roda os testes de novo e só implanta a partir da `main`.
 
 ## Estrutura
 
