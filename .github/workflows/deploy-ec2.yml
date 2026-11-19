@@ -83,6 +83,9 @@ jobs:
           fi
 
       - name: Create production env file
+        # Sensitive values are repository secrets (masked in logs). Plain configuration (timeouts, sizes,
+        # queue names, public URLs) is repository Variables: this repo is public and so are its logs, so
+        # never move a credential to `vars`. Source of truth for both is Infisical (prod, /api and /deploy).
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           # Optional until the least-privilege roles are switched on (Guara-vivo/documents#63); empty
@@ -90,37 +93,37 @@ jobs:
           MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
           WORKER_DATABASE_URL: ${{ secrets.WORKER_DATABASE_URL }}
           JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-          JWT_ACCESS_TOKEN_EXPIRE: ${{ secrets.JWT_ACCESS_TOKEN_EXPIRE }}
-          JWT_REFRESH_TOKEN_EXPIRE: ${{ secrets.JWT_REFRESH_TOKEN_EXPIRE }}
-          RECORDS_CACHE_TTL_SECONDS: ${{ secrets.RECORDS_CACHE_TTL_SECONDS }}
+          JWT_ACCESS_TOKEN_EXPIRE: ${{ vars.JWT_ACCESS_TOKEN_EXPIRE }}
+          JWT_REFRESH_TOKEN_EXPIRE: ${{ vars.JWT_REFRESH_TOKEN_EXPIRE }}
+          RECORDS_CACHE_TTL_SECONDS: ${{ vars.RECORDS_CACHE_TTL_SECONDS }}
           CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
-          MAX_REQUEST_BODY_BYTES: ${{ secrets.MAX_REQUEST_BODY_BYTES }}
-          MAX_UPLOAD_FILE_BYTES: ${{ secrets.MAX_UPLOAD_FILE_BYTES }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          MAX_REQUEST_BODY_BYTES: ${{ vars.MAX_REQUEST_BODY_BYTES }}
+          MAX_UPLOAD_FILE_BYTES: ${{ vars.MAX_UPLOAD_FILE_BYTES }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
-          DATABASE_POOL_SIZE: ${{ secrets.DATABASE_POOL_SIZE }}
-          DATABASE_MAX_OVERFLOW: ${{ secrets.DATABASE_MAX_OVERFLOW }}
-          DATABASE_POOL_TIMEOUT: ${{ secrets.DATABASE_POOL_TIMEOUT }}
-          DATABASE_POOL_RECYCLE: ${{ secrets.DATABASE_POOL_RECYCLE }}
+          SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+          DATABASE_POOL_SIZE: ${{ vars.DATABASE_POOL_SIZE }}
+          DATABASE_MAX_OVERFLOW: ${{ vars.DATABASE_MAX_OVERFLOW }}
+          DATABASE_POOL_TIMEOUT: ${{ vars.DATABASE_POOL_TIMEOUT }}
+          DATABASE_POOL_RECYCLE: ${{ vars.DATABASE_POOL_RECYCLE }}
           RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
           RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
           RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
           RABBITMQ_DEFAULT_PASS: ${{ secrets.RABBITMQ_DEFAULT_PASS }}
-          QUEUE_NAME: ${{ secrets.QUEUE_NAME }}
-          ERROR_QUEUE_NAME: ${{ secrets.ERROR_QUEUE_NAME }}
-          IA_API_URL: ${{ secrets.IA_API_URL }}
-          DEBUG_SAVE_IMAGES_DIR: ${{ secrets.DEBUG_SAVE_IMAGES_DIR }}
-          LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
-          MAX_RETRIES: ${{ secrets.MAX_RETRIES }}
-          RABBITMQ_RECONNECT_SECONDS: ${{ secrets.RABBITMQ_RECONNECT_SECONDS }}
-          DOWNLOAD_TIMEOUT_SECONDS: ${{ secrets.DOWNLOAD_TIMEOUT_SECONDS }}
-          IA_TIMEOUT_SECONDS: ${{ secrets.IA_TIMEOUT_SECONDS }}
-          ALLOWED_IMAGE_HOSTS: ${{ secrets.ALLOWED_IMAGE_HOSTS }}
-          MAX_IMAGE_BYTES: ${{ secrets.MAX_IMAGE_BYTES }}
-          RABBITMQ_HEARTBEAT_SECONDS: ${{ secrets.RABBITMQ_HEARTBEAT_SECONDS }}
-          RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS: ${{ secrets.RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS }}
-          DEBUG_MAX_RUNS: ${{ secrets.DEBUG_MAX_RUNS }}
+          QUEUE_NAME: ${{ vars.QUEUE_NAME }}
+          ERROR_QUEUE_NAME: ${{ vars.ERROR_QUEUE_NAME }}
+          IA_API_URL: ${{ vars.IA_API_URL }}
+          DEBUG_SAVE_IMAGES_DIR: ${{ vars.DEBUG_SAVE_IMAGES_DIR }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL }}
+          MAX_RETRIES: ${{ vars.MAX_RETRIES }}
+          RABBITMQ_RECONNECT_SECONDS: ${{ vars.RABBITMQ_RECONNECT_SECONDS }}
+          DOWNLOAD_TIMEOUT_SECONDS: ${{ vars.DOWNLOAD_TIMEOUT_SECONDS }}
+          IA_TIMEOUT_SECONDS: ${{ vars.IA_TIMEOUT_SECONDS }}
+          ALLOWED_IMAGE_HOSTS: ${{ vars.ALLOWED_IMAGE_HOSTS }}
+          MAX_IMAGE_BYTES: ${{ vars.MAX_IMAGE_BYTES }}
+          RABBITMQ_HEARTBEAT_SECONDS: ${{ vars.RABBITMQ_HEARTBEAT_SECONDS }}
+          RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS: ${{ vars.RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SECONDS }}
+          DEBUG_MAX_RUNS: ${{ vars.DEBUG_MAX_RUNS }}
           ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: |
