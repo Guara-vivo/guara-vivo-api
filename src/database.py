@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
@@ -81,7 +82,28 @@ DEFAULT_DATABASE_URL = DATABASE_URL
 DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
 DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
 DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
-ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+
+
+def asyncpg_engine_url(url: str) -> str:
+    """Rewrite libpq's `sslmode` as asyncpg's `ssl` for the SQLAlchemy async engine.
+
+    `DATABASE_URL` is written for libpq (`?sslmode=require`), which is what psycopg2 (Alembic) and
+    `asyncpg.connect(dsn)` (progress LISTEN) understand. SQLAlchemy's asyncpg dialect instead passes
+    every query parameter as a keyword to `asyncpg.connect`, which has no `sslmode` keyword and fails
+    with `TypeError`; it takes the same values as `ssl`. A URL without `sslmode` is left untouched.
+    """
+    parsed = make_url(url)
+    if "sslmode" not in parsed.query:
+        return url
+    query = dict(parsed.query)
+    sslmode = query.pop("sslmode")
+    query.setdefault("ssl", sslmode)
+    return parsed.set(query=query).render_as_string(hide_password=False)
+
+
+ASYNC_DATABASE_URL = asyncpg_engine_url(
+    DATABASE_URL.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+)
 
 try:
     import asyncpg
