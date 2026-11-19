@@ -56,6 +56,10 @@ jobs:
     needs: test
     # Disparo manual numa feature branch roda só os testes: o deploy usa os secrets de produção.
     if: github.ref == 'refs/heads/main'
+    # The credentials are secrets of the `production` environment (Settings > Environments), which only
+    # the `main` branch may use. A workflow edited on another branch gets none of them, even if it drops
+    # the `if` above. Keep credentials out of repository secrets.
+    environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
