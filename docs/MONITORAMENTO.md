@@ -46,7 +46,7 @@ Exceto os quatro marcados como "alerta próprio", são os alertas padrão do Net
 | Outros | `oom_kill`, uso de swap, `load_average_*`, previsão de disco/inodes acabando |
 | Servidor | Nó some do Cloud (Unreachable) |
 
-Para referência: os contêineres têm teto de memória no `docker-compose.yml` (api 512m, worker 512m, rabbitmq 1g, identifier 4g).
+Para referência: os contêineres têm teto de memória no `docker-compose.yml` (api 512m, worker 512m, rabbitmq 1g, identifier 2g).
 
 ## O que fazer quando um alerta chega
 
